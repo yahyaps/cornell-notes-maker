@@ -1,6 +1,86 @@
 import io
+import hashlib
 import streamlit as st
 import fitz  # PyMuPDF
+from PIL import Image
+
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+# --------------------------------------------------
+# File conversion helper
+# --------------------------------------------------
+
+def convert_to_pdf(uploaded_file):
+    """Convert supported uploads to PDF bytes."""
+    filename = uploaded_file.name.lower()
+    file_bytes = uploaded_file.getvalue()
+
+    if filename.endswith(".pdf"):
+        return file_bytes
+
+    if filename.endswith((".png", ".jpg", ".jpeg")):
+        with Image.open(io.BytesIO(file_bytes)) as image:
+            image = image.convert("RGB")
+            output = io.BytesIO()
+            image.save(output, format="PDF")
+            return output.getvalue()
+
+    if filename.endswith(".txt"):
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        pdf = fitz.open()
+        try:
+            pdf.new_page(width=595, height=842).insert_textbox(
+                fitz.Rect(45, 45, 550, 795),
+                text,
+                fontsize=10,
+                fontname="helv",
+                lineheight=1.4,
+            )
+            return pdf.tobytes(garbage=4, deflate=True)
+        finally:
+            pdf.close()
+
+    office_extensions = (".docx", ".doc", ".pptx", ".ppt")
+
+    if filename.endswith(office_extensions):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / Path(uploaded_file.name).name
+            input_path.write_bytes(file_bytes)
+
+            subprocess.run(
+                [
+                    "libreoffice",
+                    "-env:UserInstallation=file://"
+                    + str(Path(temp_dir) / "lo_profile"),
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    temp_dir,
+                    str(input_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=True,
+            )
+
+            output_path = input_path.with_suffix(".pdf")
+
+            if not output_path.exists():
+                raise ValueError("Office file conversion failed.")
+
+            return output_path.read_bytes()
+
+    raise ValueError(
+        "Unsupported file type. Upload PDF, PNG, JPG, JPEG, TXT, "
+        "DOC, DOCX, PPT, or PPTX."
+    )
+
+
 
 # --------------------------------------------------
 # Page configuration
@@ -23,22 +103,22 @@ TRANSLATIONS = {
     "en": {
         "title": "Cornell Notes Maker",
         "subtitle": "Turn lecture PDFs into clean Cornell notes.",
-        "subtitle2": "Two slides per page, organized vertically.",
+        "subtitle2": "Choose one or two source pages per sheet and preview before download.",
         "upload_title": "1. Upload your lecture",
-        "upload_help": "Upload your PDF by dragging and dropping it below, or browse your device.",
-        "drop_title": "Drop your PDF here",
-        "drop_description": "Drag your lecture PDF into the upload area below",
-        "drop_hint": "PDF files only • Your original file will not be modified",
-        "browse": "Click Browse files to choose a PDF",
+        "upload_help": "Upload your file by dragging and dropping it below, or browse your device.",
+        "drop_title": "Drop your file here",
+        "drop_description": "Drag your lecture file into the upload area below",
+        "drop_hint": "PDF, Word, PowerPoint, images, or TXT • Original file unchanged",
+        "browse": "Click Browse files to choose a file",
         "template_title": "2. Choose your template",
         "template_help": "Choose the Cornell layout that suits your study style.",
         "template1": "Template 1 — Cue column + Notes + Summary",
         "template2": "Template 2 — Class / Date / Topic + Main Points + Notes",
         "create_title": "3. Create your notes",
-        "create_help": "Your PDF will contain two vertically stacked slides per page, without writing lines behind them.",
+        "create_help": "Your document will contain two vertically stacked elements per page, without writing lines behind them.",
         "create_button": "Create Cornell PDF",
         "download_button": "Download Cornell PDF",
-        "select_pdf": "Please upload a PDF file first.",
+        "select_pdf": "Please upload a file first.",
         "ready": "File ready",
         "creating": "Creating your Cornell PDF...",
         "success": "Your Cornell PDF is ready!",
@@ -50,23 +130,23 @@ TRANSLATIONS = {
     },
     "ar": {
         "title": "منشئ ملاحظات كورنيل",
-        "subtitle": "حوّل ملفات المحاضرات PDF إلى ملاحظات كورنيل منظمة.",
-        "subtitle2": "شريحتان في كل صفحة، مرتبتان عموديًا.",
+        "subtitle": "حوّل ملفات المحاضرات والمستندات إلى ملاحظات كورنيل منظمة.",
+        "subtitle2": "اختر صفحة أو صفحتين في كل ورقة، وشاهد المعاينة قبل التنزيل.",
         "upload_title": "١. ارفع ملف المحاضرة",
-        "upload_help": "يمكنك سحب ملف PDF وإفلاته في منطقة الرفع أدناه، أو اختيار الملف من جهازك.",
-        "drop_title": "أفلت ملف PDF هنا",
+        "upload_help": "يمكنك سحب الملف (PDF، صور، أو نص) وإفلاته في منطقة الرفع أدناه، أو اختيار الملف من جهازك.",
+        "drop_title": "أفلت الملف هنا",
         "drop_description": "اسحب ملف المحاضرة وأفلته داخل مساحة رفع الملف أدناه",
-        "drop_hint": "ملفات PDF فقط • لن يتم تعديل الملف الأصلي",
+        "drop_hint": "ملفات PDF وWord وPowerPoint والصور وTXT • لن يتم تعديل الملف الأصلي",
         "browse": "أو اضغط على زر اختيار الملفات لتحديد المحاضرة",
         "template_title": "٢. اختر قالب كورنيل",
         "template_help": "اختر تصميم الملاحظات المناسب لطريقة دراستك.",
         "template1": "القالب الأول — عمود الأسئلة + الملاحظات + الملخص",
         "template2": "القالب الثاني — الصف والتاريخ والموضوع + النقاط الرئيسية والملاحظات",
         "create_title": "٣. أنشئ ملف الملاحظات",
-        "create_help": "ستحتوي كل صفحة على شريحتين مرتبتين عموديًا، دون خطوط كتابة خلف الشرائح.",
+        "create_help": "ستحتوي كل صفحة على محتوى مرتب عموديًا، دون خطوط كتابة خلف الشرائح.",
         "create_button": "إنشاء ملف كورنيل PDF",
         "download_button": "تنزيل ملف كورنيل PDF",
-        "select_pdf": "يرجى رفع ملف PDF أولًا.",
+        "select_pdf": "يرجى رفع ملف أولًا.",
         "ready": "الملف جاهز",
         "creating": "جارٍ إنشاء ملف كورنيل...",
         "success": "أصبح ملف كورنيل جاهزًا!",
@@ -202,7 +282,38 @@ def add_label(page, x, y, text, size=9, font="helv"):
     page.insert_text((x, y), text, fontsize=size, fontname=font)
 
 
-def make_page(out, src, first, second, number, total, template):
+def get_content_clip(src_page, margin=12):
+    """Find text/image block bounds to reduce excessive whitespace on Word pages."""
+    blocks = src_page.get_text("blocks")
+    rects = []
+    for block in blocks:
+        if len(block) >= 5:
+            x0, y0, x1, y1 = block[:4]
+            if x1 > x0 and y1 > y0:
+                rects.append(fitz.Rect(x0, y0, x1, y1))
+    if not rects:
+        return src_page.rect
+    clip = rects[0]
+    for rect in rects[1:]:
+        clip |= rect
+    clip = fitz.Rect(
+        max(src_page.rect.x0, clip.x0 - margin),
+        max(src_page.rect.y0, clip.y0 - margin),
+        min(src_page.rect.x1, clip.x1 + margin),
+        min(src_page.rect.y1, clip.y1 + margin),
+    )
+    return clip if not clip.is_empty else src_page.rect
+
+
+def place_source_page(page, rect, src, source_page_number, crop_whitespace=False):
+    source_page = src[source_page_number]
+    kwargs = {"keep_proportion": True}
+    if crop_whitespace:
+        kwargs["clip"] = get_content_clip(source_page)
+    page.show_pdf_page(rect, src, source_page_number, **kwargs)
+
+
+def make_page(out, src, first, second, number, total, template, crop_whitespace=False):
     page = out.new_page(width=PAGE_W, height=PAGE_H)
 
     if template == "Template 1":
@@ -339,88 +450,93 @@ def make_page(out, src, first, second, number, total, template):
         add_label(page, margin + 10, sy + 16, "Summary:", 9, "hebo")
         add_label(page, PAGE_W - 90, PAGE_H - 8, f"Page {number}/{total}", 7)
 
-    # Clean slide area: no writing lines behind the slides.
-    middle = (target.y0 + target.y1) / 2
-
-    # Subtle divider between the slides
-    draw_line(
-        page,
-        target.x0, middle,
-        target.x1, middle,
-        color=(0.78, 0.80, 0.78),
-        width=0.5,
-    )
-
-    upper = fitz.Rect(
-        target.x0, target.y0,
-        target.x1, middle - 4,
-    )
-    lower = fitz.Rect(
-        target.x0, middle + 4,
-        target.x1, target.y1,
-    )
-
-    if first is not None:
-        page.show_pdf_page(
-            upper, src, first, keep_proportion=True
+    
+    # Place one or two source pages inside the Cornell notes area.
+    if second is None:
+        if first is not None:
+            place_source_page(
+                page, target, src, first,
+                crop_whitespace=crop_whitespace,
+            )
+    else:
+        middle = (target.y0 + target.y1) / 2
+        upper = fitz.Rect(target.x0, target.y0, target.x1, middle - 4)
+        lower = fitz.Rect(target.x0, middle + 4, target.x1, target.y1)
+        draw_line(
+            page, target.x0, middle, target.x1, middle,
+            color=(0.78, 0.80, 0.78), width=0.5,
+        )
+        if first is not None:
+            place_source_page(
+                page, upper, src, first,
+                crop_whitespace=crop_whitespace,
+            )
+        place_source_page(
+            page, lower, src, second,
+            crop_whitespace=crop_whitespace,
         )
 
-    if second is not None:
-        page.show_pdf_page(
-            lower, src, second, keep_proportion=True
-        )
 
 
 # --------------------------------------------------
 # PDF conversion
 # --------------------------------------------------
-def build_pdf(input_bytes, template):
+
+def build_pdf(input_bytes, template, pages_per_sheet=1, crop_whitespace=False):
     src = fitz.open(stream=input_bytes, filetype="pdf")
     out = fitz.open()
-
     try:
         if src.page_count == 0:
-            raise ValueError("The uploaded PDF contains no pages.")
-
-        total = (src.page_count + 1) // 2
-
+            raise ValueError("The uploaded document contains no pages.")
+        if pages_per_sheet not in (1, 2):
+            raise ValueError("Choose 1 or 2 pages per sheet.")
+        total = (src.page_count + pages_per_sheet - 1) // pages_per_sheet
         for i in range(total):
-            first = i * 2
-            second = first + 1 if first + 1 < src.page_count else None
-
-            make_page(
-                out, src, first, second,
-                i + 1, total, template,
+            first = i * pages_per_sheet
+            second = (
+                first + 1
+                if pages_per_sheet == 2 and first + 1 < src.page_count
+                else None
             )
-
+            make_page(
+                out, src, first, second, i + 1, total, template,
+                crop_whitespace=crop_whitespace,
+            )
         return out.tobytes(garbage=4, deflate=True)
-
     finally:
         out.close()
         src.close()
 
 
+def render_pdf_page(pdf_bytes, page_number, zoom=1.35):
+    """Render a PDF page to PNG for an in-app preview."""
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        if document.page_count == 0:
+            raise ValueError("The generated PDF contains no pages.")
+        page_number = max(0, min(page_number, document.page_count - 1))
+        pixmap = document[page_number].get_pixmap(
+            matrix=fitz.Matrix(zoom, zoom),
+            alpha=False,
+        )
+        return pixmap.tobytes("png")
+
+
 # --------------------------------------------------
-# Bilingual web interface
+# Bilingual web interface with live preview
 # --------------------------------------------------
 st.markdown(
     f'<div class="section-title">{lang["upload_title"]}</div>',
     unsafe_allow_html=True,
 )
-
 st.write(lang["upload_help"])
 
-# Actual upload area — Streamlit handles drag and drop here.
 uploaded_file = st.file_uploader(
     label=lang["drop_title"],
-    type=["pdf"],
+    type=["pdf", "png", "jpg", "jpeg", "txt", "docx", "doc", "pptx", "ppt"],
     accept_multiple_files=False,
     help=lang["upload_help"],
 )
-
-st.caption(
-    "📄 " + lang["drop_description"] + " · " + lang["drop_hint"]
-)
+st.caption("📄 " + lang["drop_description"] + " · " + lang["drop_hint"])
 
 st.markdown(
     f'<div class="section-title">{lang["template_title"]}</div>',
@@ -432,69 +548,126 @@ template_labels = {
     "Template 1": lang["template1"],
     "Template 2": lang["template2"],
 }
-
 template = st.radio(
     lang["template_title"],
     ["Template 1", "Template 2"],
     format_func=lambda value: template_labels[value],
     horizontal=False,
     label_visibility="collapsed",
+    key="template_choice",
 )
 
-st.markdown(
-    f'<div class="section-title">{lang["create_title"]}</div>',
-    unsafe_allow_html=True,
+default_pages = 2 if (
+    uploaded_file is not None
+    and uploaded_file.name.lower().endswith((".ppt", ".pptx"))
+) else 1
+pages_per_sheet = st.radio(
+    "عدد الصفحات في الورقة" if is_arabic else "Source pages per sheet",
+    options=[1, 2],
+    format_func=lambda value: (
+        ("صفحة واحدة — محتوى أكبر" if is_arabic else "One page — larger content")
+        if value == 1
+        else ("صفحتان — توفير الورق" if is_arabic else "Two pages — save paper")
+    ),
+    horizontal=True,
+    index=0 if default_pages == 1 else 1,
+    key="pages_per_sheet_choice",
 )
-st.write(lang["create_help"])
 
-if uploaded_file is not None:
+if uploaded_file is None:
+    st.info(
+        "ارفع ملفًا لعرض المعاينة هنا تلقائيًا."
+        if is_arabic
+        else "Upload a file to see its preview here automatically."
+    )
+    st.session_state.pop("cornell_pdf", None)
+    st.session_state.pop("cornell_filename", None)
+    st.session_state.pop("cornell_signature", None)
+else:
     st.success(
         f'{lang["ready"]}: {uploaded_file.name} '
         f'({uploaded_file.size / 1024:.1f} KB)'
     )
+    file_bytes = uploaded_file.getvalue()
+    crop_whitespace = uploaded_file.name.lower().endswith((".docx", ".doc"))
+    signature = hashlib.sha256(
+        uploaded_file.name.encode("utf-8", errors="replace")
+        + file_bytes
+        + template.encode("utf-8")
+        + str(pages_per_sheet).encode("ascii")
+        + str(crop_whitespace).encode("ascii")
+    ).hexdigest()
 
-if st.button(
-    f'✨ {lang["create_button"]}',
-    type="primary",
-    use_container_width=True,
-):
-    if uploaded_file is None:
-        st.warning(lang["select_pdf"])
-    else:
+    if st.session_state.get("cornell_signature") != signature:
         try:
-            with st.spinner(lang["creating"]):
-                pdf_bytes = build_pdf(
-                    uploaded_file.getvalue(),
+            with st.spinner(
+                "جارٍ إنشاء المعاينة..." if is_arabic else "Generating preview..."
+            ):
+                source_pdf = convert_to_pdf(uploaded_file)
+                output_pdf = build_pdf(
+                    source_pdf,
                     template,
+                    pages_per_sheet=pages_per_sheet,
+                    crop_whitespace=crop_whitespace,
                 )
-
-            original_name = uploaded_file.name.rsplit(".", 1)[0]
-            output_name = f"{original_name}_cornell.pdf"
-
-            st.session_state["cornell_pdf"] = pdf_bytes
-            st.session_state["cornell_filename"] = output_name
-            st.session_state["cornell_language"] = selected_language
-
-            st.success(lang["success"])
-
+            base_name = uploaded_file.name.rsplit(".", 1)[0]
+            st.session_state["cornell_pdf"] = output_pdf
+            st.session_state["cornell_filename"] = f"{base_name}_cornell.pdf"
+            st.session_state["cornell_signature"] = signature
+            st.session_state["cornell_preview_page"] = 1
         except Exception as exc:
+            st.session_state.pop("cornell_pdf", None)
+            st.session_state.pop("cornell_filename", None)
+            st.session_state.pop("cornell_signature", None)
             st.error(f'{lang["error"]}: {exc}')
 
-# Keep the generated PDF available after changing language.
-if "cornell_pdf" in st.session_state:
-    download_language = st.session_state.get(
-        "cornell_language", selected_language
-    )
-    download_text = TRANSLATIONS[download_language]["download_button"]
+    if (
+        st.session_state.get("cornell_signature") == signature
+        and "cornell_pdf" in st.session_state
+    ):
+        output_pdf = st.session_state["cornell_pdf"]
+        with fitz.open(stream=output_pdf, filetype="pdf") as output_doc:
+            output_page_count = output_doc.page_count
 
-    st.download_button(
-        label=f"⬇️ {download_text}",
-        data=st.session_state["cornell_pdf"],
-        file_name=st.session_state["cornell_filename"],
-        mime="application/pdf",
-        type="primary",
-        use_container_width=True,
-    )
+        st.markdown(
+            f'<div class="section-title">{"المعاينة المباشرة" if is_arabic else "Live preview"}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"عدد الصفحات الناتجة: {output_page_count}"
+            if is_arabic
+            else f"Output pages: {output_page_count}"
+        )
+        selected_preview_page = st.slider(
+            "صفحة المعاينة" if is_arabic else "Preview page",
+            min_value=1,
+            max_value=max(1, output_page_count),
+            value=min(
+                st.session_state.get("cornell_preview_page", 1),
+                max(1, output_page_count),
+            ),
+            key="cornell_preview_slider",
+        )
+        st.session_state["cornell_preview_page"] = selected_preview_page
+        st.image(
+            render_pdf_page(output_pdf, selected_preview_page - 1),
+            caption=(
+                f"صفحة {selected_preview_page} من {output_page_count}"
+                if is_arabic
+                else f"Page {selected_preview_page} of {output_page_count}"
+            ),
+            use_container_width=True,
+        )
+        st.download_button(
+            label=f"⬇️ {lang['download_button']}",
+            data=output_pdf,
+            file_name=st.session_state["cornell_filename"],
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+            key="download_cornell_pdf",
+        )
+
 
 st.divider()
 st.markdown(
