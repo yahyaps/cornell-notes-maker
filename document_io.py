@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf
 from PIL import Image
 
 
@@ -39,10 +39,10 @@ def convert_to_pdf(uploaded_file):
 
     if filename.endswith(".txt"):
         text = file_bytes.decode("utf-8-sig", errors="replace")
-        pdf = fitz.open()
+        pdf = pymupdf.open()
         try:
             pdf.new_page(width=595, height=842).insert_textbox(
-                fitz.Rect(45, 45, 550, 795),
+                pymupdf.Rect(45, 45, 550, 795),
                 text,
                 fontsize=10,
                 fontname="helv",
@@ -93,12 +93,12 @@ def convert_to_pdf(uploaded_file):
 
 def render_pdf_page(pdf_bytes, page_number, zoom=1.35):
     """Render a PDF page to PNG for an in-app preview."""
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
         if document.page_count == 0:
             raise ValueError("The generated PDF contains no pages.")
         page_number = max(0, min(page_number, document.page_count - 1))
         pixmap = document[page_number].get_pixmap(
-            matrix=fitz.Matrix(zoom, zoom),
+            matrix=pymupdf.Matrix(zoom, zoom),
             alpha=False,
         )
         return pixmap.tobytes("png")
@@ -140,7 +140,7 @@ def load_document(uploaded_file):
         raise DocumentError("corrupt") from exc
 
     try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
             if document.needs_pass:
                 raise DocumentError("encrypted")
             page_count = document.page_count

@@ -1,10 +1,7 @@
 """Shared test utilities."""
 
 import threading
-import warnings
 from pathlib import Path
-
-warnings.filterwarnings("ignore", message=".*fitz.*deprecated", category=FutureWarning)
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"

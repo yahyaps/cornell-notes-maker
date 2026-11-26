@@ -6,8 +6,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import fitz
 import httpx
+import pymupdf
 from google import genai
 from google.genai import errors as genai_errors
 
@@ -159,7 +159,7 @@ def extract_pdf_text(pdf_bytes):
     """Extract selectable text from a PDF while preserving page numbers."""
     pages = []
 
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
         for index, page in enumerate(document):
             text = page.get_text("text").strip()
 
@@ -291,11 +291,11 @@ def _prepare_slides(pdf_bytes, page_numbers):
     Done up front on one thread because PyMuPDF is not thread-safe.
     """
     slides = {}
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
         for number in page_numbers:
             page = document[number - 1]
             pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(SLIDE_IMAGE_ZOOM, SLIDE_IMAGE_ZOOM),
+                matrix=pymupdf.Matrix(SLIDE_IMAGE_ZOOM, SLIDE_IMAGE_ZOOM),
                 alpha=False,
             )
             slides[number] = (
@@ -385,7 +385,7 @@ def analyze_pages(pdf_bytes, max_pages=None, pages=None, progress=None,
     Raises AIError at once for failures that would hit every page
     (missing or invalid key, unknown model).
     """
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
         page_count = document.page_count
     if pages is None:
         limit = page_count if max_pages is None else min(page_count, max_pages)
