@@ -69,23 +69,43 @@ st.html(f"""
   /* Sliders and file names read left-to-right in both languages. */
   [data-testid="stSlider"], [data-testid="stFileUploaderFileName"] {{ direction: ltr; }}
 
-  .brand {{ display: flex; align-items: center; gap: .9rem; }}
-  .brand-mark {{ width: clamp(2.6rem, 5vw, 3.4rem); aspect-ratio: 1; border-radius: .8rem;
-    background: #4D7D67; color: #fff; display: grid; place-items: center;
-    font-weight: 800; font-size: clamp(1.3rem, 2.6vw, 1.7rem); flex-shrink: 0; }}
-  .brand h1 {{ font-size: clamp(1.7rem, 4.2vw, 2.7rem); font-weight: 800; margin: 0;
-    padding: 0; color: #404042; line-height: 1.25; }}
-  .tagline {{ color: #5E6063; font-size: clamp(1.05rem, 1.8vw, 1.3rem); line-height: 1.85;
-    margin: .9rem 0 1.6rem; max-width: 52rem; }}
+  .brand {{ display: flex; align-items: center; gap: .7rem; }}
+  .brand-mark {{ width: 2.1rem; height: auto; flex-shrink: 0; }}
+  .brand-name {{ font-size: 1.15rem; font-weight: 800; color: #2F5A47; }}
+  .tagline {{ color: #5E6063; font-size: 1.1rem; line-height: 1.8; margin: .6rem 0 0;
+    max-width: 38rem; }}
 
-  .features {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 1rem; margin: 0 0 2rem; }}
-  .feature {{ background: #F2F6F4; border: 1px solid #DCE5E0; border-radius: 1rem;
-    padding: 1.2rem 1.3rem; }}
-  .feature .icon {{ font-size: 1.7rem; line-height: 1; }}
-  .feature h3 {{ font-size: 1.15rem; font-weight: 800; color: #4D7D67; margin: .7rem 0 .35rem;
+  /* Hero: the copy and a real page of the output, side by side. */
+  .hero {{ display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+    gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center; margin: 1.6rem 0 .6rem; }}
+  .hero h1 {{ font-size: clamp(2rem, 4.6vw, 2.9rem); font-weight: 800; line-height: 1.3;
+    color: #2F5A47; margin: 0 0 1rem; padding: 0; }}
+  .hero-text {{ font-size: clamp(1.08rem, 1.6vw, 1.25rem); line-height: 1.9; color: #404042;
+    max-width: 34rem; margin: 0 0 1.6rem; }}
+  .hero h2 {{ font-size: 1.05rem; font-weight: 800; color: #404042; margin: 0 0 .7rem;
     padding: 0; }}
-  .feature p {{ font-size: 1rem; color: #5E6063; line-height: 1.8; margin: 0; }}
+  .parts {{ list-style: none; margin: 0; padding: 0; display: grid; gap: .65rem; }}
+  .parts li {{ display: grid; grid-template-columns: .9rem 1fr; gap: .7rem;
+    align-items: start; }}
+  .parts p {{ margin: 0; font-size: 1.02rem; line-height: 1.75; }}
+  .parts b {{ color: #2F5A47; }}
+  .part-text {{ color: #5E6063; }}
+  /* Swatches echo the boxes on the PDF page so the legend maps onto the image. */
+  .swatch {{ width: .9rem; height: .9rem; border-radius: .15rem; margin-top: .45rem; }}
+  .swatch-explain {{ background: #404042; }}
+  .swatch-points {{ background: #EEF4F1; border-inline-start: 3px solid #4D7D67; }}
+  .swatch-review {{ background: #FFFFFF; border: 1.5px solid #CFDDD5; }}
+  .swatch-summary {{ background: #F6F6F4; border: 1.5px solid #CFDDD5; }}
+  .hero-after {{ color: #5E6063; font-size: 1rem; margin: 1.1rem 0 0; }}
+  .hero-sheet {{ margin: 0; justify-self: center; width: min(100%, 25rem); }}
+  .hero-sheet img {{ display: block; width: 100%; height: auto; border-radius: .35rem;
+    border: 1px solid #DCE5E0; box-shadow: 0 1.2rem 2.4rem -1.4rem rgba(47, 90, 71, .45); }}
+  /* Phones: the template card right below shows the same page, so the hero
+     keeps only the words and the upload area moves up. */
+  @media (max-width: 760px) {{
+    .hero {{ grid-template-columns: 1fr; }}
+    .hero-sheet {{ display: none; }}
+  }}
 
   .step {{ font-weight: 800; font-size: clamp(1.2rem, 2.2vw, 1.45rem); color: #404042;
     margin: 1.6rem 0 .7rem; }}
@@ -93,8 +113,16 @@ st.html(f"""
   .template-name {{ font-weight: 800; font-size: 1.2rem; color: #4D7D67; margin-bottom: .4rem; }}
 
   /* Upload area: larger target, translated instructions. */
-  [data-testid="stFileUploaderDropzone"] {{ min-height: 9rem; padding: 1.6rem;
-    border: 2px dashed #A9C2B5; border-radius: 1rem; background: #F7FAF8; }}
+  /* The one bold element: the upload area is a Cornell notebook sheet, with
+     ruled lines and the sage margin rule of the cue column. */
+  [data-testid="stFileUploaderDropzone"] {{ position: relative; min-height: 10rem;
+    padding-block: 1.8rem; padding-inline: 5.4rem 1.6rem;
+    border: 1.5px solid #CFDDD5; border-radius: .5rem;
+    background-color: #FFFFFF;
+    background-image: linear-gradient({"to left" if rtl else "to right"},
+        transparent 4.2rem, #4D7D67 4.2rem, #4D7D67 calc(4.2rem + 2px), transparent calc(4.2rem + 2px)),
+      repeating-linear-gradient(to bottom, transparent 0 1.95rem, #E3ECE7 1.95rem 2rem); }}
+  [data-testid="stFileUploaderDropzone"]:hover {{ border-color: #4D7D67; }}
   [data-testid="stFileUploaderDropzoneInstructions"] > div {{ display: none; }}
   [data-testid="stFileUploaderDropzoneInstructions"]::before {{
     content: "{css_text(T["upload_drop"])}"; font-size: 1.1rem; font-weight: 700;
@@ -109,6 +137,8 @@ st.html(f"""
   /* Tabs, buttons and messages sized for touch screens. */
   [data-testid="stTab"] p {{ font-size: 1.1rem; font-weight: 700; }}
   [data-testid="stButtonGroup"] button p {{ font-size: 1rem; }}
+  /* Segmented controls draw their joined borders for left-to-right only. */
+  [data-testid="stButtonGroup"] [role="radiogroup"] {{ direction: ltr; }}
   .stButton button, .stDownloadButton button, .stFormSubmitButton button {{
     min-height: 3rem; font-size: 1.05rem; border-radius: .75rem; }}
   [data-testid="stImage"] img {{ border: 1px solid #DCE5E0; border-radius: .6rem; }}
@@ -197,22 +227,44 @@ def preview_png(pdf_bytes, page_index):
 # --------------------------------------------------
 # Header
 # --------------------------------------------------
+# The logo is a Cornell sheet in miniature (static/brand/logo.svg); served as a
+# file because st.html strips inline SVG.
+LOGO = '<img class="brand-mark" src="app/static/brand/logo.svg" alt="" width="34" height="41">'
+
 title_col, lang_col = st.columns([4, 1.4], vertical_alignment="center")
 with title_col:
-    st.html(f'<div class="brand"><div class="brand-mark">C</div><h1>{T["app_title"]}</h1></div>')
+    st.html(f'<div class="brand">{LOGO}<span class="brand-name">{T["app_title"]}</span></div>')
 with lang_col:
     st.segmented_control(
         T["language"], options=["ar", "en"], default=lang, key="lang_select",
         format_func=lambda code: "العربية" if code == "ar" else "English",
         label_visibility="collapsed",
     )
-st.html(f'<p class="tagline">{T["tagline"]}</p>')
-# The feature overview is for first-time visitors; it steps aside once a file
-# is loaded so the working steps stay close to the top.
+
+# First visit: show the product itself, a real page of the notes PDF, with
+# what each part of the page is for. Once a file is loaded the hero steps
+# aside so the working steps sit near the top.
 if st.session_state.get("upload") is None and not st.session_state.get("_test_document"):
-    st.html('<div class="features">' + "".join(
-        f'<div class="feature"><div class="icon">{icon}</div><h3>{title}</h3><p>{body}</p></div>'
-        for icon, title, body in T["features"]) + "</div>")
+    parts = "".join(
+        f'<li><span class="swatch swatch-{key}"></span>'
+        f'<p><b>{name}</b> <span class="part-text">{text}</span></p></li>'
+        for key, name, text in T["page_parts"])
+    st.html(f"""
+<section class="hero">
+  <div class="hero-copy">
+    <h1>{T["hero_title"]}</h1>
+    <p class="hero-text">{T["hero_text"]}</p>
+    <h2>{T["page_parts_title"]}</h2>
+    <ul class="parts">{parts}</ul>
+    <p class="hero-after">{T["hero_after"]}</p>
+  </div>
+  <figure class="hero-sheet">
+    <img src="app/static/previews/ai_cornell.png" alt="{T["hero_image_alt"]}" loading="eager">
+  </figure>
+</section>
+""")
+else:
+    st.html(f'<p class="tagline">{T["tagline"]}</p>')
 
 
 # --------------------------------------------------
@@ -544,7 +596,7 @@ def support_tab():
 
 
 notes_view, assistant_view, support_view = st.tabs(
-    [f"📄 {T['tab_notes']}", f"💬 {T['tab_assistant']}", f"🛟 {T['tab_support']}"])
+    [T["tab_notes"], T["tab_assistant"], T["tab_support"]])
 with notes_view:
     notes_tab()
 with assistant_view:
