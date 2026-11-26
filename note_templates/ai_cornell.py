@@ -63,7 +63,7 @@ SUMMARY_TINT = "#F6F6F4"
 # sentences never fall back to a font that lacks a glyph (e.g. "؟"), and
 # its glyphs map back to the right characters when text is copied or searched.
 # Symbols it lacks (Greek letters, arrows) are drawn by MuPDF's fallback fonts.
-FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+FONT_DIR = Path(__file__).resolve().parent.parent / "static" / "fonts"
 REQUIRED_FONTS = (
     "Almarai-Regular.ttf",
     "Almarai-Bold.ttf",
@@ -236,11 +236,10 @@ class Typesetter:
 
     def __init__(self):
         self.archive = _archive()
-        self._scratch = pymupdf.open()
         self._cache = {}
 
     def close(self):
-        self._scratch.close()
+        self._cache.clear()
 
     def _layout_height(self, body, width, scale):
         story = pymupdf.Story(body, user_css=css(scale), archive=self.archive)
@@ -258,11 +257,13 @@ class Typesetter:
         key = (body, round(width, 2), scale)
         if key not in self._cache:
             layout_h = self._layout_height(body, width, scale)
-            page = self._scratch.new_page(width=width + 10, height=layout_h + 10)
-            page.insert_htmlbox(pymupdf.Rect(0, 0, width, layout_h), body,
-                                css=css(scale), archive=self.archive, scale_low=1)
-            bottoms = [b[3] for b in page.get_text("blocks")]
-            self._scratch.delete_page(-1)
+            # A throwaway document per measurement: each HTML layout embeds the
+            # fonts again, and only closing the document releases that memory.
+            with pymupdf.open() as scratch:
+                page = scratch.new_page(width=width + 10, height=layout_h + 10)
+                page.insert_htmlbox(pymupdf.Rect(0, 0, width, layout_h), body,
+                                    css=css(scale), archive=self.archive, scale_low=1)
+                bottoms = [b[3] for b in page.get_text("blocks")]
             self._cache[key] = (layout_h, max(bottoms) if bottoms else 0.0)
         return self._cache[key]
 
@@ -581,7 +582,13 @@ def build_pdf(source_pdf_bytes, page_notes, pages_per_sheet=1, lecture_title="")
         plans = Planner(layout).plan(units, pages_per_sheet)
         renderer = Renderer(typesetter, layout, source, lecture_title)
         for number, plan in enumerate(plans, start=1):
-            renderer.page(out, plan, number, len(plans))
+            # Each page is drawn in its own document with fonts subset to the
+            # glyphs used, then merged; drawing straight into `out` would keep
+            # a full font copy per text box in memory (~300 MB for 38 slides).
+            with pymupdf.open() as single:
+                renderer.page(single, plan, number, len(plans))
+                single.subset_fonts()
+                out.insert_pdf(single)
         out.set_metadata({"title": lecture_title or "AI Lecture Notes",
                           "creator": "Cornell Notes Maker"})
         return out.tobytes(garbage=4, deflate=True)

@@ -102,3 +102,52 @@ def render_pdf_page(pdf_bytes, page_number, zoom=1.35):
             alpha=False,
         )
         return pixmap.tobytes("png")
+
+
+# --------------------------------------------------
+# Validated loading for the app
+# --------------------------------------------------
+# Refuse decompression bombs: images above ~60 megapixels.
+Image.MAX_IMAGE_PIXELS = 60_000_000
+
+
+class DocumentError(Exception):
+    """An upload that cannot be used, with a `kind` the interface explains.
+
+    Kinds: unsupported, office_unavailable, conversion_failed, encrypted,
+    corrupt, empty, image_too_large.
+    """
+
+    def __init__(self, kind):
+        super().__init__(kind)
+        self.kind = kind
+
+
+def load_document(uploaded_file):
+    """Convert an upload to PDF and validate it. Returns (pdf_bytes, page_count)."""
+    try:
+        pdf_bytes = convert_to_pdf(uploaded_file)
+    except FileNotFoundError as exc:  # libreoffice binary missing
+        raise DocumentError("office_unavailable") from exc
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise DocumentError("conversion_failed") from exc
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise DocumentError("image_too_large") from exc
+    except ValueError as exc:
+        kind = "unsupported" if "Unsupported" in str(exc) else "conversion_failed"
+        raise DocumentError(kind) from exc
+    except OSError as exc:  # unreadable image data
+        raise DocumentError("corrupt") from exc
+
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+            if document.needs_pass:
+                raise DocumentError("encrypted")
+            page_count = document.page_count
+    except DocumentError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any MuPDF parse failure
+        raise DocumentError("corrupt") from exc
+    if page_count == 0:
+        raise DocumentError("empty")
+    return pdf_bytes, page_count

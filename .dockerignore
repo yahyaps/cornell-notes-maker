@@ -1,12 +1,14 @@
-.venv
+# Keep secrets, local data and tooling out of the image.
 .git
+.venv
 __pycache__
 *.pyc
 .env
 .streamlit/secrets.toml
+tests
+scripts
 *.pdf
 *.docx
 *.pptx
-tests
 *.bak
 *.backup

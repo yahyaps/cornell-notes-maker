@@ -1,462 +1,464 @@
+"""Streamlit interface for Cornell Notes Maker.
+
+Flow: upload a lecture -> "PDF notes" tab (AI analysis per slide, rendered by
+a note template) or "AI assistant" tab (study report and chat). Expensive
+results are cached in the session per file, so changing a layout option or
+the language never repeats AI work.
+"""
+
 import hashlib
+import logging
+import time
+import uuid
+
 import streamlit as st
-import fitz  # PyMuPDF
 
-from document_io import convert_to_pdf, render_pdf_page
-from note_templates import TEMPLATES
+import ai_assistant
+import usage_limits
+from ai_assistant import AIError
+from document_io import DocumentError, load_document, render_pdf_page
+from note_templates import DEFAULT_TEMPLATE, TEMPLATES
+from ui_text import TEXT
+from usage_limits import LimitExceeded, limiter
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("app")
 
-# --------------------------------------------------
-# Page configuration
-# --------------------------------------------------
-st.set_page_config(
-    page_title="Cornell Notes Maker",
-    page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+UPLOAD_TYPES = ["pdf", "pptx", "ppt", "docx", "doc", "png", "jpg", "jpeg", "txt"]
 
 
 # --------------------------------------------------
-# Language support
+# Language and page setup
 # --------------------------------------------------
-TRANSLATIONS = {
-    "en": {
-        "title": "Cornell Notes Maker",
-        "subtitle": "Turn lecture PDFs into clean Cornell notes.",
-        "subtitle2": "Choose one or two source pages per sheet and preview before download.",
-        "upload_title": "1. Upload your lecture",
-        "upload_help": "Upload your file by dragging and dropping it below, or browse your device.",
-        "drop_title": "Drop your file here",
-        "drop_description": "Drag your lecture file into the upload area below",
-        "drop_hint": "PDF, Word, PowerPoint, images, or TXT • Original file unchanged",
-        "browse": "Click Browse files to choose a file",
-        "template_title": "2. Template",
-        "template_help": "Your lecture becomes a printable A4 study guide.",
-        "create_title": "3. Create your notes",
-        "create_help": "Your document will contain two vertically stacked elements per page, without writing lines behind them.",
-        "create_button": "Create Cornell PDF",
-        "download_button": "Download Cornell PDF",
-        "select_pdf": "Please upload a file first.",
-        "ready": "File ready",
-        "creating": "Creating your Cornell PDF...",
-        "success": "Your Cornell PDF is ready!",
-        "error": "Could not create the PDF",
-        "footer": "Cornell Notes Maker • Powered by PyMuPDF",
-        "language": "Language",
-        "english": "English",
-        "arabic": "العربية",
-    },
-    "ar": {
-        "title": "منشئ ملاحظات كورنيل",
-        "subtitle": "حوّل ملفات المحاضرات والمستندات إلى ملاحظات كورنيل منظمة.",
-        "subtitle2": "اختر صفحة أو صفحتين في كل ورقة، وشاهد المعاينة قبل التنزيل.",
-        "upload_title": "١. ارفع ملف المحاضرة",
-        "upload_help": "يمكنك سحب الملف (PDF، صور، أو نص) وإفلاته في منطقة الرفع أدناه، أو اختيار الملف من جهازك.",
-        "drop_title": "أفلت الملف هنا",
-        "drop_description": "اسحب ملف المحاضرة وأفلته داخل مساحة رفع الملف أدناه",
-        "drop_hint": "ملفات PDF وWord وPowerPoint والصور وTXT • لن يتم تعديل الملف الأصلي",
-        "browse": "أو اضغط على زر اختيار الملفات لتحديد المحاضرة",
-        "template_title": "٢. القالب",
-        "template_help": "تتحول محاضرتك إلى دليل مذاكرة جاهز للطباعة بحجم A4.",
-        "create_title": "٣. أنشئ ملف الملاحظات",
-        "create_help": "ستحتوي كل صفحة على محتوى مرتب عموديًا، دون خطوط كتابة خلف الشرائح.",
-        "create_button": "إنشاء ملف كورنيل PDF",
-        "download_button": "تنزيل ملف كورنيل PDF",
-        "select_pdf": "يرجى رفع ملف أولًا.",
-        "ready": "الملف جاهز",
-        "creating": "جارٍ إنشاء ملف كورنيل...",
-        "success": "أصبح ملف كورنيل جاهزًا!",
-        "error": "تعذّر إنشاء ملف PDF",
-        "footer": "منشئ ملاحظات كورنيل • يعمل باستخدام PyMuPDF",
-        "language": "اللغة",
-        "english": "English",
-        "arabic": "العربية",
-    },
-}
+def initial_language():
+    requested = st.query_params.get("lang")
+    if requested in TEXT:
+        return requested
+    locale = (st.context.locale or "").lower()
+    return "ar" if locale.startswith("ar") or not locale else "en"
 
-# Keep the selected language when Streamlit reruns the app.
-if "language" not in st.session_state:
-    st.session_state.language = "en"
 
-language_col, spacer_col = st.columns([1, 4])
+if "lang" not in st.session_state:
+    st.session_state.lang = initial_language()
+if st.session_state.get("lang_select") in TEXT:
+    st.session_state.lang = st.session_state.lang_select
 
-with language_col:
-    selected_language = st.selectbox(
-        "Language / اللغة",
-        options=["en", "ar"],
-        format_func=lambda value: (
-            "English" if value == "en" else "العربية"
-        ),
-        index=0 if st.session_state.language == "en" else 1,
-        key="language_selector",
-    )
+lang = st.session_state.lang
+T = TEXT[lang]
+rtl = lang == "ar"
 
-st.session_state.language = selected_language
-lang = TRANSLATIONS[selected_language]
-is_arabic = selected_language == "ar"
+st.set_page_config(page_title=T["app_title"], page_icon="📘", layout="centered")
+st.query_params["lang"] = lang
+
+st.html(f"""
+<style>
+  [data-testid="stMainBlockContainer"] {{
+    max-width: 860px; padding-top: 2.2rem;
+    direction: {"rtl" if rtl else "ltr"}; text-align: {"right" if rtl else "left"};
+  }}
+  /* Sliders and file names read left-to-right in both languages. */
+  [data-testid="stSlider"], [data-testid="stFileUploaderFileName"] {{ direction: ltr; }}
+  .brand {{ display: flex; align-items: center; gap: .8rem; margin-bottom: .2rem; }}
+  .brand-mark {{ width: 2.6rem; height: 2.6rem; border-radius: .7rem; background: #4D7D67;
+    color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 1.25rem; }}
+  .brand h1 {{ font-size: 1.85rem; font-weight: 800; margin: 0; padding: 0; color: #404042; }}
+  .tagline {{ color: #6B6D70; font-size: 1.02rem; margin: .1rem 0 1.4rem; line-height: 1.8; }}
+  .step {{ font-weight: 800; font-size: 1.15rem; color: #404042; margin: 1.4rem 0 .5rem; }}
+  .muted {{ color: #6B6D70; font-size: .93rem; line-height: 1.8; }}
+  .template-name {{ font-weight: 800; font-size: 1.08rem; color: #4D7D67; margin-bottom: .3rem; }}
+  .footer {{ color: #8A8C8F; font-size: .85rem; text-align: center; margin-top: 2.5rem;
+    line-height: 1.8; }}
+  [data-testid="stImage"] img {{ border: 1px solid #DCE5E0; border-radius: .5rem; }}
+  /* AI text: lists follow the interface direction, and each paragraph takes
+     the direction of its own first letter (Arabic or English). */
+  [data-testid="stChatMessage"], [data-testid="stMarkdownContainer"] {{
+    direction: {"rtl" if rtl else "ltr"}; }}
+  [data-testid="stMarkdownContainer"] :is(p, li, h1, h2, h3, h4, td, th) {{
+    unicode-bidi: plaintext; text-align: start; }}
+</style>
+""")
 
 
 # --------------------------------------------------
-# Bilingual styling and header
+# Helpers
 # --------------------------------------------------
-direction = "rtl" if is_arabic else "ltr"
-text_align = "right" if is_arabic else "left"
-
-st.markdown(
-    f"""
-    <style>
-    .block-container {{
-        max-width: 1050px;
-        padding-top: 1.8rem;
-        padding-bottom: 3rem;
-    }}
-
-    .hero {{
-        direction: {direction};
-        text-align: {text_align};
-        padding: 2rem;
-        border-radius: 20px;
-        background: linear-gradient(135deg, #edf2f7, #f8fafc);
-        border: 1px solid #dbe3eb;
-        margin-bottom: 1.8rem;
-    }}
-
-    .hero h1 {{
-        color: #243b53;
-        margin-bottom: 0.7rem;
-        font-size: 2.2rem;
-        font-weight: 800;
-    }}
-
-    .hero p {{
-        color: #526477;
-        margin-bottom: 0;
-        font-size: 1rem;
-        line-height: 1.9;
-    }}
-
-    .section-title {{
-        direction: {direction};
-        text-align: {text_align};
-        color: #334e68;
-        font-weight: 750;
-        font-size: 1.2rem;
-        margin: 1.4rem 0 0.5rem 0;
-    }}
-
-    div[data-testid="stFileUploader"] {{
-        border: 2px dashed #829ab1;
-        border-radius: 18px;
-        padding: 1.5rem;
-        background: rgba(130, 154, 177, 0.08);
-        direction: {direction};
-    }}
-
-    div[data-testid="stFileUploader"] section {{
-        border: none;
-        background: transparent;
-        min-height: 120px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }}
-
-    div[data-testid="stButton"] button,
-    div[data-testid="stDownloadButton"] button {{
-        width: 100%;
-        min-height: 3rem;
-        border-radius: 10px;
-        font-weight: 650;
-    }}
-
-    .footer {{
-        direction: {direction};
-        text-align: center;
-        color: #829ab1;
-        padding-top: 1rem;
-    }}
-    </style>
-
-    <div class="hero">
-        <h1>📚 {lang["title"]}</h1>
-        <p>{lang["subtitle"]}<br>{lang["subtitle2"]}</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+def show_error(kind, **fields):
+    message = T["errors"].get(kind) or T["errors"]["unknown"]
+    if "{ref}" in message and "ref" not in fields:
+        fields["ref"] = "-"
+    st.error(message.format(**fields), icon="⚠️")
 
 
+def show_unexpected(exc, what):
+    ref = uuid.uuid4().hex[:8]
+    logger.error("%s failed [ref %s]: %s", what, ref, ai_assistant.redact(repr(exc), 1000))
+    show_error("unknown", ref=ref)
+
+
+def show_limit(exc, pages=0):
+    if exc.kind == "rate":
+        show_error("rate", minutes=max(1, round(exc.retry_after / 60)))
+    elif exc.kind == "too_many_slides":
+        show_error("too_many_slides", pages=pages, limit=usage_limits.MAX_AI_SLIDES)
+    else:
+        show_error(exc.kind)
+
+
+def plain_markdown(text):
+    """AI text for st.markdown with math rendering off: "$...$" would become
+    left-to-right KaTeX that scrambles formulas inside Arabic sentences."""
+    return text.replace("$", "\\$")
+
+
+def isolate(text):
+    return chr(0x2068) + text + chr(0x2069)
+
+
+def human_size(size):
+    return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB"
+
+
+def human_duration(seconds):
+    if seconds < 60:
+        return T["seconds"].format(n=max(1, round(seconds)))
+    return T["minutes"].format(n=round(seconds / 60))
+
+
+def visitor():
+    return usage_limits.visitor_id(st.context)
+
+
+def cache(name):
+    """Per-session dict keyed by file signature (and options)."""
+    return st.session_state.setdefault(name, {})
+
+
+def forget_other_files(sig):
+    """Keep memory bounded: drop cached results that belong to older uploads."""
+    for name in ("notes", "pdfs", "reports", "chats", "lecture_text"):
+        store = cache(name)
+        for key in list(store):
+            if (key[0] if isinstance(key, tuple) else key) != sig:
+                del store[key]
+
+
+@st.cache_data(max_entries=64, show_spinner=False)
+def preview_png(pdf_bytes, page_index):
+    return render_pdf_page(pdf_bytes, page_index, zoom=1.6)
 
 
 # --------------------------------------------------
-# Bilingual web interface with live preview
+# Header
 # --------------------------------------------------
-st.markdown(
-    f'<div class="section-title">{lang["upload_title"]}</div>',
-    unsafe_allow_html=True,
-)
-st.write(lang["upload_help"])
-
-uploaded_file = st.file_uploader(
-    label=lang["drop_title"],
-    type=["pdf", "png", "jpg", "jpeg", "txt", "docx", "doc", "pptx", "ppt"],
-    accept_multiple_files=False,
-    help=lang["upload_help"],
-)
-st.caption("📄 " + lang["drop_description"] + " · " + lang["drop_hint"])
-
-st.markdown(
-    f'<div class="section-title">{lang["template_title"]}</div>',
-    unsafe_allow_html=True,
-)
-st.write(lang["template_help"])
-
-template_keys = list(TEMPLATES)
-if len(template_keys) > 1:
-    template_key = st.radio(
-        lang["template_title"],
-        template_keys,
-        format_func=lambda key: (
-            TEMPLATES[key].name_ar if is_arabic else TEMPLATES[key].name_en
-        ),
+title_col, lang_col = st.columns([4, 1.4], vertical_alignment="center")
+with title_col:
+    st.html(f'<div class="brand"><div class="brand-mark">C</div><h1>{T["app_title"]}</h1></div>')
+with lang_col:
+    st.segmented_control(
+        T["language"], options=["ar", "en"], default=lang, key="lang_select",
+        format_func=lambda code: "العربية" if code == "ar" else "English",
         label_visibility="collapsed",
-        key="template_choice",
     )
+st.html(f'<p class="tagline">{T["tagline"]}</p>')
+
+
+# --------------------------------------------------
+# Step 1: upload
+# --------------------------------------------------
+st.html(f'<div class="step">{T["step_upload"]}</div>')
+uploaded = st.file_uploader(T["upload_label"], type=UPLOAD_TYPES, help=T["upload_help"],
+                            label_visibility="collapsed", key="upload")
+st.caption(T["upload_help"])
+
+doc = None
+if uploaded is not None:
+    data = uploaded.getvalue()
+    sig = hashlib.sha256(uploaded.name.encode("utf-8", "replace") + b"\0" + data).hexdigest()
+    doc = st.session_state.get("doc")
+    if not doc or doc["sig"] != sig:
+        try:
+            with st.spinner(T["converting"]):
+                pdf_bytes, pages = load_document(uploaded)
+            doc = {"sig": sig, "name": uploaded.name, "pdf": pdf_bytes, "pages": pages,
+                   "size": len(data)}
+            st.session_state.doc = doc
+            forget_other_files(sig)
+        except DocumentError as exc:
+            st.session_state.pop("doc", None)
+            doc = None
+            show_error(exc.kind)
+        except Exception as exc:  # noqa: BLE001 - shown as a reference code
+            st.session_state.pop("doc", None)
+            doc = None
+            show_unexpected(exc, "Upload")
+    if doc:
+        # File names and sizes are isolated so they keep their own direction
+        # inside Arabic text (U+2068 first-strong isolate ... U+2069 pop).
+        st.success(T["file_info"].format(name=isolate(doc["name"]), pages=doc["pages"],
+                                         size=isolate(human_size(doc["size"]))), icon="📄")
 else:
-    template_key = template_keys[0]
-template = TEMPLATES[template_key]
-st.markdown(
-    f"**{template.name_ar if is_arabic else template.name_en}** — "
-    f"{template.description_ar if is_arabic else template.description_en}"
-)
+    # Tests cannot drive st.file_uploader, so tests/test_app_flow.py places a
+    # document in session state directly (visitors cannot set session state).
+    doc = st.session_state.get("doc") if st.session_state.get("_test_document") else None
+    if doc is None:
+        st.session_state.pop("doc", None)
 
-pages_per_sheet = st.radio(
-    "عدد الشرائح في الورقة" if is_arabic else "Slides per sheet",
-    options=[1, 2],
-    format_func=lambda value: (
-        ("شريحة واحدة — خط أكبر" if is_arabic else "One slide — larger text")
-        if value == 1
-        else ("شريحتان — توفير الورق" if is_arabic else "Two slides — save paper")
-    ),
-    horizontal=True,
-    index=1,
-    key="pages_per_sheet_choice",
-)
 
-st.markdown(
-    f'<div class="section-title">{"إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي" if is_arabic else "Create AI Lecture Notes"}</div>',
-    unsafe_allow_html=True,
-)
-st.write(
-    "سيحلّل Gemini كل شريحة عند الضغط على الزر فقط، ثم ينشئ ملف PDF جديدًا."
-    if is_arabic
-    else "Gemini will analyze each slide only after you press the button, then create a separate PDF."
-)
-
-if uploaded_file is not None:
-    st.success(
-        f'{lang["ready"]}: {uploaded_file.name} '
-        f'({uploaded_file.size / 1024:.1f} KB)'
-    )
-
-ai_current_signature = None
-if uploaded_file is not None:
-    ai_current_signature = hashlib.sha256(
-        uploaded_file.name.encode("utf-8", errors="replace")
-        + uploaded_file.getvalue()
-        + template_key.encode("utf-8")
-        + str(pages_per_sheet).encode("ascii")
-    ).hexdigest()
-
-if st.button(
-    "✨ إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي"
-    if is_arabic
-    else "✨ Create AI Lecture Notes",
-    type="primary",
-    use_container_width=True,
-    key="create_ai_lecture_notes_button",
-):
-    if uploaded_file is None:
-        st.warning(lang["select_pdf"])
-    else:
+# --------------------------------------------------
+# Access code (optional, set APP_ACCESS_CODE)
+# --------------------------------------------------
+def ai_allowed(place):
+    if not usage_limits.access_code_required() or st.session_state.get("access_ok"):
+        return True
+    st.html(f'<div class="step">{T["access_title"]}</div>')
+    st.caption(T["access_hint"])
+    with st.form(f"access_form_{place}", border=False):
+        code = st.text_input(T["access_title"], type="password", label_visibility="collapsed")
+        submitted = st.form_submit_button(T["access_button"])
+    if submitted:
         try:
-            from ai_assistant import analyze_pages
-
-            with st.spinner(
-                "جارٍ تحليل الشرائح وإنشاء ملف الملاحظات..."
-                if is_arabic
-                else "Analyzing slides and creating your notes PDF..."
-            ):
-                source_pdf = convert_to_pdf(uploaded_file)
-                page_notes = analyze_pages(source_pdf)
-                base_name = uploaded_file.name.rsplit(".", 1)[0]
-                ai_pdf = template.build_pdf(
-                    source_pdf,
-                    page_notes,
-                    pages_per_sheet=pages_per_sheet,
-                    lecture_title=base_name,
-                )
-
-            st.session_state["ai_notes_pdf"] = ai_pdf
-            st.session_state["ai_notes_filename"] = f"{base_name}_ai_lecture_notes.pdf"
-            st.session_state["ai_notes_source_name"] = uploaded_file.name
-            st.session_state["ai_notes_signature"] = ai_current_signature
-            st.session_state["ai_notes_preview_page"] = 1
-            st.success(
-                "تم إنشاء ملاحظات المحاضرة بنجاح."
-                if is_arabic
-                else "AI lecture notes created successfully."
-            )
-        except Exception as exc:
-            st.error(
-                f"تعذّر إنشاء ملاحظات الذكاء الاصطناعي: {exc}"
-                if is_arabic
-                else f"Could not create AI lecture notes: {exc}"
-            )
-
-if (
-    st.session_state.get("ai_notes_pdf")
-    and ai_current_signature
-    and st.session_state.get("ai_notes_signature") == ai_current_signature
-):
-    ai_pdf = st.session_state["ai_notes_pdf"]
-    with fitz.open(stream=ai_pdf, filetype="pdf") as ai_doc:
-        ai_page_count = ai_doc.page_count
-
-    st.markdown(
-        f'<div class="section-title">{"معاينة ملاحظات الذكاء الاصطناعي" if is_arabic else "AI Notes Preview"}</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        f"عدد الصفحات: {ai_page_count}"
-        if is_arabic
-        else f"Output pages: {ai_page_count}"
-    )
-    ai_preview_page = st.slider(
-        "صفحة المعاينة" if is_arabic else "Preview page",
-        min_value=1,
-        max_value=max(1, ai_page_count),
-        value=min(
-            st.session_state.get("ai_notes_preview_page", 1),
-            max(1, ai_page_count),
-        ),
-        key="ai_notes_preview_slider",
-    )
-    st.session_state["ai_notes_preview_page"] = ai_preview_page
-    st.image(
-        render_pdf_page(ai_pdf, ai_preview_page - 1),
-        caption=(
-            f"صفحة {ai_preview_page} من {ai_page_count}"
-            if is_arabic
-            else f"Page {ai_preview_page} of {ai_page_count}"
-        ),
-        use_container_width=True,
-    )
-    st.download_button(
-        label="⬇️ تنزيل ملاحظات المحاضرة"
-        if is_arabic
-        else "⬇️ Download AI Lecture Notes",
-        data=ai_pdf,
-        file_name=st.session_state.get(
-            "ai_notes_filename", "ai_lecture_notes.pdf"
-        ),
-        mime="application/pdf",
-        type="primary",
-        use_container_width=True,
-        key="download_ai_notes_pdf",
-    )
-
-
-st.divider()
-st.markdown(
-    f'<div class="footer">{lang["footer"]}</div>',
-    unsafe_allow_html=True,
-)
+            limiter.access_attempt(visitor())
+        except LimitExceeded as exc:
+            show_limit(exc)
+            return False
+        if usage_limits.access_code_ok(code):
+            st.session_state.access_ok = True
+            st.rerun()
+        st.error(T["access_wrong"])
+    return False
 
 
 # --------------------------------------------------
-# AI Assistant — optional lecture analysis
+# Tab: PDF notes
 # --------------------------------------------------
-from ai_assistant import analyze_lecture
+def run_slide_analysis(pages=None):
+    """Analyze all slides (or just `pages`) and store the notes for this file."""
+    count = len(pages) if pages else doc["pages"]
+    try:
+        limiter.start_ai_job(visitor(), slides=count)
+    except LimitExceeded as exc:
+        show_limit(exc, pages=count)
+        return
+    bar = st.progress(0.0, text=T["analyzing"].format(done=0, total=count))
+    started = time.monotonic()
 
-st.divider()
-st.subheader(
-    "المساعد الذكي للمحاضرات"
-    if is_arabic
-    else "AI Lecture Assistant"
-)
+    def progress(done, total):
+        elapsed = time.monotonic() - started
+        text = (T["analyzing_eta"].format(done=done, total=total,
+                                          eta=human_duration(elapsed / done * (total - done)))
+                if 0 < done < total else T["analyzing"].format(done=done, total=total))
+        bar.progress(done / total, text=text)
 
-st.write(
-    "حلّل محاضرتك للحصول على شرح عربي ونقاط مهمة وأسئلة اختبار."
-    if is_arabic
-    else "Analyze your lecture to generate Arabic explanations, "
-         "high-yield points, and practice questions."
-)
+    try:
+        notes = ai_assistant.analyze_pages(doc["pdf"], pages=pages, progress=progress)
+    except AIError as exc:
+        limiter.refund_slides(count)
+        bar.empty()
+        show_error(exc.kind)
+        return
+    except Exception as exc:  # noqa: BLE001
+        bar.empty()
+        show_unexpected(exc, "Slide analysis")
+        return
+    logger.info("Analyzed %d slides in %.0fs", count, time.monotonic() - started)
 
-question_count = st.selectbox(
-    "عدد أسئلة MCQ" if is_arabic else "Number of MCQs",
-    options=[5, 10, 15, 20],
-    index=1,
-    key="ai_question_count",
-)
+    store = cache("notes")
+    if pages and doc["sig"] in store:
+        by_page = {note["source_page"]: note for note in store[doc["sig"]]}
+        by_page.update({note["source_page"]: note for note in notes})
+        notes = [by_page[number] for number in sorted(by_page)]
+    store[doc["sig"]] = notes
+    pdfs = cache("pdfs")
+    for key in [k for k in pdfs if k[0] == doc["sig"]]:
+        del pdfs[key]
+    st.rerun()
 
-if st.button(
-    "✨ حلّل المحاضرة بالذكاء الاصطناعي"
-    if is_arabic
-    else "✨ Analyze Lecture with AI",
-    type="primary",
-    use_container_width=True,
-    key="analyze_lecture_button",
-):
-    if uploaded_file is None:
-        st.warning(
-            "ارفع ملف المحاضرة أولًا."
-            if is_arabic
-            else "Please upload a lecture file first."
+
+def notes_pdf(template_key, per_sheet):
+    key = (doc["sig"], template_key, per_sheet)
+    pdfs = cache("pdfs")
+    if key not in pdfs:
+        with st.spinner(T["building_pdf"]):
+            pdfs[key] = TEMPLATES[template_key].build_pdf(
+                doc["pdf"], cache("notes")[doc["sig"]], pages_per_sheet=per_sheet,
+                lecture_title=doc["name"].rsplit(".", 1)[0],
+            )
+    return pdfs[key]
+
+
+def show_preview(pdf_bytes, file_name):
+    import pymupdf
+
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as output:
+        total = output.page_count
+    st.html(f'<div class="step">{T["preview"]}</div>')
+    page = 1
+    if total > 1:
+        page = st.slider(T["preview_page"], 1, total, 1, key="preview_page",
+                         label_visibility="collapsed")
+        page = min(page, total)
+    st.image(preview_png(pdf_bytes, page - 1),
+             caption=T["page_of"].format(page=page, total=total), width="stretch")
+    st.download_button(f"⬇️ {T['download']}", data=pdf_bytes, file_name=file_name,
+                       mime="application/pdf", type="primary", width="stretch",
+                       key="download_notes")
+
+
+def notes_tab():
+    st.html(f'<div class="step">{T["step_template"]}</div>')
+    keys = list(TEMPLATES)
+    template_key = DEFAULT_TEMPLATE
+    if len(keys) > 1:
+        template_key = st.radio(
+            T["step_template"], keys, horizontal=True, label_visibility="collapsed",
+            format_func=lambda k: TEMPLATES[k].name_ar if rtl else TEMPLATES[k].name_en,
+            key="template_choice",
         )
+    template = TEMPLATES[template_key]
+    with st.container(border=True):
+        image_col, text_col = st.columns([1, 1.6], vertical_alignment="center")
+        if template.preview_image:
+            image_col.image(str(template.preview_image), width="stretch")
+        text_col.html(
+            f'<div class="template-name">{template.name_ar if rtl else template.name_en}</div>'
+            f'<div class="muted">{template.description_ar if rtl else template.description_en}</div>'
+        )
+        per_sheet = text_col.segmented_control(
+            T["per_sheet"], options=[2, 1], default=2, key="per_sheet",
+            format_func=lambda n: T["per_sheet_1"] if n == 1 else T["per_sheet_2"],
+        ) or 2
+
+    st.html(f'<div class="step">{T["step_create"]}</div>')
+    if doc is None:
+        st.info(T["upload_first"], icon="📄")
+        return
+    if not ai_allowed("notes"):
+        return
+
+    notes = cache("notes").get(doc["sig"])
+    if notes is None:
+        st.caption(T["create_hint"])
+        if st.button(f"✨ {T['create_button']}", type="primary", width="stretch",
+                     key="create_notes"):
+            run_slide_analysis()
+        return
+
+    failed = [n["source_page"] for n in notes if n.get("error")]
+    if failed:
+        st.warning(T["failed_slides"].format(n=len(failed), pages=", ".join(map(str, failed))),
+                   icon="⚠️")
+        if st.button(T["retry_failed"], key="retry_failed"):
+            run_slide_analysis(pages=failed)
     else:
+        st.success(T["analysis_done"].format(n=len(notes)), icon="✅")
+
+    try:
+        pdf_bytes = notes_pdf(template_key, per_sheet)
+    except Exception as exc:  # noqa: BLE001
+        show_unexpected(exc, "PDF build")
+        return
+    show_preview(pdf_bytes, f"{doc['name'].rsplit('.', 1)[0]}_notes.pdf")
+
+
+# --------------------------------------------------
+# Tab: AI assistant
+# --------------------------------------------------
+def lecture_text():
+    store = cache("lecture_text")
+    if doc["sig"] not in store:
+        store[doc["sig"]] = ai_assistant.extract_pdf_text(doc["pdf"])
+    return store[doc["sig"]]
+
+
+def report_section():
+    st.html(f'<div class="step">{T["report_title"]}</div>')
+    st.caption(T["report_hint"])
+    reports = cache("reports")
+    count_col, button_col = st.columns([1, 1.4], vertical_alignment="bottom")
+    question_count = count_col.selectbox(T["mcq_count"], [5, 10, 15, 20], index=1,
+                                         key="ai_question_count")
+    if button_col.button(f"✨ {T['report_button']}", type="primary", width="stretch",
+                         key="analyze_lecture_button"):
         try:
-            with st.spinner(
-                "جارٍ تحليل المحاضرة... قد يستغرق ذلك بعض الوقت."
-                if is_arabic
-                else "Analyzing lecture... this may take a moment."
-            ):
-                source_pdf = convert_to_pdf(uploaded_file)
-                analysis = analyze_lecture(
-                    source_pdf,
-                    question_count=question_count,
-                )
+            limiter.start_ai_job(visitor())
+            with st.spinner(T["report_working"]):
+                reports[doc["sig"]] = ai_assistant.analyze_lecture(
+                    doc["pdf"], question_count=question_count)
+        except LimitExceeded as exc:
+            show_limit(exc)
+        except AIError as exc:
+            show_error(exc.kind)
+        except Exception as exc:  # noqa: BLE001
+            show_unexpected(exc, "Lecture report")
 
-            st.session_state["ai_lecture_analysis"] = analysis
-            st.session_state["ai_lecture_filename"] = uploaded_file.name
+    report = reports.get(doc["sig"])
+    if report:
+        with st.container(border=True):
+            st.markdown(plain_markdown(report))
+        st.download_button(f"⬇️ {T['report_download']}", data=report.encode("utf-8"),
+                           file_name=f"{doc['name'].rsplit('.', 1)[0]}_study_report.md",
+                           mime="text/markdown", width="stretch",
+                           key="download_ai_study_notes")
 
-        except Exception as exc:
-            st.error(
-                f"تعذّر تحليل المحاضرة: {exc}"
-                if is_arabic
-                else f"Lecture analysis failed: {exc}"
-            )
 
-if st.session_state.get("ai_lecture_analysis"):
-    st.markdown("---")
-    st.markdown(
-        "### نتائج تحليل المحاضرة"
-        if is_arabic
-        else "### Lecture Analysis Results"
-    )
-    st.caption(
-        st.session_state.get("ai_lecture_filename", "")
-    )
-    st.markdown(st.session_state["ai_lecture_analysis"])
+def chat_section():
+    st.html(f'<div class="step">{T["chat_title"]}</div>')
+    history = cache("chats").setdefault(doc["sig"], [])
+    for turn in history:
+        with st.chat_message(turn["role"], avatar="🧑‍🎓" if turn["role"] == "user" else "📘"):
+            st.markdown(plain_markdown(turn["content"]))
 
-    st.download_button(
-        label="تنزيل الشرح النصي"
-        if is_arabic
-        else "Download Study Notes",
-        data=st.session_state["ai_lecture_analysis"].encode("utf-8"),
-        file_name="lecture_study_notes.md",
-        mime="text/markdown",
-        use_container_width=True,
-        key="download_ai_study_notes",
-    )
+    if not history:
+        # A chosen suggestion is queued once; the widget is cleared so a later
+        # rerun (e.g. switching language) cannot send it again.
+        def queue_suggestion():
+            st.session_state.pending_question = st.session_state.chat_suggestion
+            st.session_state.chat_suggestion = None
+
+        st.pills(T["chat_title"], T["chat_suggestions"], key="chat_suggestion",
+                 label_visibility="collapsed", on_change=queue_suggestion)
+    question = (st.chat_input(T["chat_placeholder"], key="chat_input",
+                              max_chars=ai_assistant.MAX_QUESTION_CHARS)
+                or st.session_state.pop("pending_question", None))
+    if question:
+        try:
+            limiter.chat_message(visitor())
+            text = lecture_text()
+            with st.chat_message("user", avatar="🧑‍🎓"):
+                st.markdown(plain_markdown(question))
+            with st.chat_message("assistant", avatar="📘"), st.spinner(T["chat_thinking"]):
+                answer = ai_assistant.ask_about_lecture(text, history, question)
+            history += [{"role": "user", "content": question},
+                        {"role": "assistant", "content": answer}]
+            st.rerun()
+        except LimitExceeded as exc:
+            show_limit(exc)
+        except AIError as exc:
+            show_error(exc.kind)
+        except Exception as exc:  # noqa: BLE001
+            show_unexpected(exc, "Lecture chat")
+
+    if history and st.button(T["chat_clear"], key="chat_clear"):
+        history.clear()
+        st.rerun()
+
+
+def assistant_tab():
+    st.caption(T["assistant_intro"])
+    if doc is None:
+        st.info(T["upload_first"], icon="📄")
+        return
+    if not ai_allowed("assistant"):
+        return
+    report_section()
+    st.divider()
+    chat_section()
+
+
+notes_view, assistant_view = st.tabs([f"📄 {T['tab_notes']}", f"💬 {T['tab_assistant']}"])
+with notes_view:
+    notes_tab()
+with assistant_view:
+    assistant_tab()
+
+st.html(f'<div class="footer">{T["privacy"]}<br>{T["app_title"]} · Google Gemini</div>')
