@@ -112,8 +112,9 @@ TRANSLATIONS = {
         "browse": "Click Browse files to choose a file",
         "template_title": "2. Choose your template",
         "template_help": "Choose the Cornell layout that suits your study style.",
-        "template1": "Template 1 — Cue column + Notes + Summary",
-        "template2": "Template 2 — Class / Date / Topic + Main Points + Notes",
+        "template1": "Template 1 — Course Details, Key Points, Lecture Content & Summary",
+        "template2": "Template 2 — AI Explanation + Original Slides",
+        "hide_notes": "Hide the personal Notes area",
         "create_title": "3. Create your notes",
         "create_help": "Your document will contain two vertically stacked elements per page, without writing lines behind them.",
         "create_button": "Create Cornell PDF",
@@ -140,8 +141,9 @@ TRANSLATIONS = {
         "browse": "أو اضغط على زر اختيار الملفات لتحديد المحاضرة",
         "template_title": "٢. اختر قالب كورنيل",
         "template_help": "اختر تصميم الملاحظات المناسب لطريقة دراستك.",
-        "template1": "القالب الأول — عمود الأسئلة + الملاحظات + الملخص",
-        "template2": "القالب الثاني — الصف والتاريخ والموضوع + النقاط الرئيسية والملاحظات",
+        "template1": "القالب الأول — بيانات المقرر والنقاط الرئيسية ومحتوى المحاضرة والملخص",
+        "template2": "القالب الثاني — شرح بالذكاء الاصطناعي مع الشرائح الأصلية",
+        "hide_notes": "إخفاء مساحة الملاحظات الشخصية فقط",
         "create_title": "٣. أنشئ ملف الملاحظات",
         "create_help": "ستحتوي كل صفحة على محتوى مرتب عموديًا، دون خطوط كتابة خلف الشرائح.",
         "create_button": "إنشاء ملف كورنيل PDF",
@@ -313,144 +315,87 @@ def place_source_page(page, rect, src, source_page_number, crop_whitespace=False
     page.show_pdf_page(rect, src, source_page_number, **kwargs)
 
 
-def make_page(out, src, first, second, number, total, template, crop_whitespace=False):
+def make_page(
+    out, src, first, second, number, total, template,
+    crop_whitespace=False, hide_notes=False
+):
     page = out.new_page(width=PAGE_W, height=PAGE_H)
 
-    if template == "Template 1":
-        cue_w = 180
-        top = 61
-        summary_h = 144
-        bottom = PAGE_H - summary_h
+    margin = 28
+    header_h = 66
+    summary_h = 126
+    main_w = 150
 
-        # Cue column
+    # Header remains visible regardless of the Notes toggle.
+    page.draw_rect(
+        fitz.Rect(margin, margin, PAGE_W - margin, margin + header_h),
+        color=(0.55, 0.58, 0.55),
+        width=0.6,
+    )
+    add_label(page, margin + 8, margin + 18, "Course:", 9, "hebo")
+    add_label(page, margin + 8, margin + 47, "Topic:", 9, "hebo")
+    add_label(page, PAGE_W - 165, margin + 18, "Date:", 9, "hebo")
+    add_label(page, PAGE_W - 165, margin + 47, "Continued from:", 7, "hebo")
+
+    body_top = margin + header_h + 12
+    # When personal notes are hidden, let lecture content use the freed space.
+    body_bottom = PAGE_H - margin - (0 if hide_notes else summary_h)
+    left_x0 = margin
+    left_x1 = margin + main_w
+    right_x0 = left_x1
+    right_x1 = PAGE_W - margin
+
+    # The Key Points column always remains visible.
+    page.draw_rect(
+        fitz.Rect(left_x0, body_top, left_x1, body_bottom),
+        color=(0.55, 0.58, 0.55),
+        width=0.6,
+    )
+    page.draw_rect(
+        fitz.Rect(left_x0, body_top, left_x1, body_top + 24),
+        color=(0.65, 0.68, 0.65),
+        fill=(0.91, 0.93, 0.90),
+        width=0.6,
+    )
+    add_label(page, left_x0 + 10, body_top + 16, "Key Points", 9, "hebo")
+
+    # The toggle hides only the Notes heading/border, never the Key Points column.
+    if not hide_notes:
         page.draw_rect(
-            fitz.Rect(0, top, cue_w, bottom),
-            color=None,
-            fill=(0.91, 0.95, 0.88),
-        )
-
-        # Notes area outline
-        page.draw_rect(
-            fitz.Rect(cue_w, top, PAGE_W, bottom),
-            color=(0.65, 0.68, 0.65),
-            width=0.6,
-        )
-
-        # Summary area
-        page.draw_rect(
-            fitz.Rect(0, bottom, PAGE_W, PAGE_H),
-            color=(0.65, 0.68, 0.65),
-            fill=(0.98, 0.96, 0.88),
-            width=0.6,
-        )
-
-        add_label(page, 12, 20, "CORNELL NOTES", 11, "hebo")
-        add_label(page, cue_w + 8, top + 17, "NOTE-TAKING AREA", 9, "hebo")
-        add_label(page, 12, bottom + 22, "SUMMARY", 10, "hebo")
-        add_label(page, PAGE_W - 90, 20, f"Page {number}/{total}", 8)
-
-        page.insert_textbox(
-            fitz.Rect(5, 210, cue_w - 5, 390),
-            "CUES / QUESTIONS",
-            fontsize=12,
-            fontname="hebo",
-            rotate=90,
-            align=1,
-        )
-
-        target = fitz.Rect(
-            cue_w + 6,
-            top + 30,
-            PAGE_W - 6,
-            bottom - 6,
-        )
-
-    else:
-        margin = 28
-        header_h = 66
-        summary_h = 126
-        main_w = 150
-
-        # Header
-        page.draw_rect(
-            fitz.Rect(
-                margin, margin,
-                PAGE_W - margin, margin + header_h
-            ),
-            color=(0.55, 0.58, 0.55),
-            width=0.6,
-        )
-
-        add_label(page, margin + 8, margin + 18, "Class:", 9, "hebo")
-        add_label(page, margin + 8, margin + 47, "Topic:", 9, "hebo")
-        add_label(page, PAGE_W - 165, margin + 18, "Date:", 9, "hebo")
-        add_label(
-            page, PAGE_W - 165, margin + 47,
-            "Continued from page:", 7
-        )
-
-        body_top = margin + header_h + 12
-        body_bottom = PAGE_H - margin - summary_h
-
-        # Main Points and Notes columns
-        page.draw_rect(
-            fitz.Rect(margin, body_top, margin + main_w, body_bottom),
+            fitz.Rect(right_x0, body_top, right_x1, body_bottom),
             color=(0.55, 0.58, 0.55),
             width=0.6,
         )
         page.draw_rect(
-            fitz.Rect(
-                margin + main_w, body_top,
-                PAGE_W - margin, body_bottom
-            ),
-            color=(0.55, 0.58, 0.55),
-            width=0.6,
-        )
-
-        # Column headings
-        page.draw_rect(
-            fitz.Rect(
-                margin, body_top,
-                margin + main_w, body_top + 24
-            ),
+            fitz.Rect(right_x0, body_top, right_x1, body_top + 24),
             color=(0.65, 0.68, 0.65),
             fill=(0.91, 0.93, 0.90),
             width=0.6,
         )
-        page.draw_rect(
-            fitz.Rect(
-                margin + main_w, body_top,
-                PAGE_W - margin, body_top + 24
-            ),
-            color=(0.65, 0.68, 0.65),
-            fill=(0.91, 0.93, 0.90),
-            width=0.6,
-        )
+        add_label(page, right_x0 + 10, body_top + 16, "Lecture Content & Notes", 9, "hebo")
 
-        add_label(page, margin + 10, body_top + 16, "Main Points", 9, "hebo")
-        add_label(
-            page, margin + main_w + 10,
-            body_top + 16, "Notes", 9, "hebo"
-        )
+    # Keep the source slide in the right-hand content area in either mode.
+    target = fitz.Rect(
+        right_x0 + 5,
+        body_top + 29,
+        right_x1 - 5,
+        body_bottom - 5,
+    )
 
-        target = fitz.Rect(
-            margin + main_w + 5,
-            body_top + 29,
-            PAGE_W - margin - 5,
-            body_bottom - 5,
-        )
-
-        # Summary section
+    # Personal notes area (beige) is hidden when the toggle is enabled.
+    if not hide_notes:
         sy = PAGE_H - margin - summary_h
         page.draw_rect(
             fitz.Rect(margin, sy, PAGE_W - margin, PAGE_H - margin),
             color=(0.55, 0.58, 0.55),
+            fill=(0.98, 0.96, 0.88),
             width=0.6,
         )
-        add_label(page, margin + 10, sy + 16, "Summary:", 9, "hebo")
-        add_label(page, PAGE_W - 90, PAGE_H - 8, f"Page {number}/{total}", 7)
+        add_label(page, margin + 10, sy + 16, "Personal Notes Area", 9, "hebo")
 
-    
+    add_label(page, PAGE_W - 90, PAGE_H - 8, f"Page {number}/{total}", 7)
+
+
     # Place one or two source pages inside the Cornell notes area.
     if second is None:
         if first is not None:
@@ -462,10 +407,11 @@ def make_page(out, src, first, second, number, total, template, crop_whitespace=
         middle = (target.y0 + target.y1) / 2
         upper = fitz.Rect(target.x0, target.y0, target.x1, middle - 4)
         lower = fitz.Rect(target.x0, middle + 4, target.x1, target.y1)
-        draw_line(
-            page, target.x0, middle, target.x1, middle,
-            color=(0.78, 0.80, 0.78), width=0.5,
-        )
+        if not hide_notes:
+            draw_line(
+                page, target.x0, middle, target.x1, middle,
+                color=(0.78, 0.80, 0.78), width=0.5,
+            )
         if first is not None:
             place_source_page(
                 page, upper, src, first,
@@ -482,7 +428,7 @@ def make_page(out, src, first, second, number, total, template, crop_whitespace=
 # PDF conversion
 # --------------------------------------------------
 
-def build_pdf(input_bytes, template, pages_per_sheet=1, crop_whitespace=False):
+def build_pdf(input_bytes, template, pages_per_sheet=1, crop_whitespace=False, hide_notes=False):
     src = fitz.open(stream=input_bytes, filetype="pdf")
     out = fitz.open()
     try:
@@ -500,7 +446,7 @@ def build_pdf(input_bytes, template, pages_per_sheet=1, crop_whitespace=False):
             )
             make_page(
                 out, src, first, second, i + 1, total, template,
-                crop_whitespace=crop_whitespace,
+                crop_whitespace=crop_whitespace, hide_notes=hide_notes,
             )
         return out.tobytes(garbage=4, deflate=True)
     finally:
@@ -557,6 +503,12 @@ template = st.radio(
     key="template_choice",
 )
 
+hide_notes = st.checkbox(
+    lang["hide_notes"],
+    value=False,
+    key="hide_notes_checkbox",
+)
+
 default_pages = 2 if (
     uploaded_file is not None
     and uploaded_file.name.lower().endswith((".ppt", ".pptx"))
@@ -574,98 +526,224 @@ pages_per_sheet = st.radio(
     key="pages_per_sheet_choice",
 )
 
-if uploaded_file is None:
-    st.info(
-        "ارفع ملفًا لعرض المعاينة هنا تلقائيًا."
-        if is_arabic
-        else "Upload a file to see its preview here automatically."
-    )
-    st.session_state.pop("cornell_pdf", None)
-    st.session_state.pop("cornell_filename", None)
-    st.session_state.pop("cornell_signature", None)
-else:
-    st.success(
-        f'{lang["ready"]}: {uploaded_file.name} '
-        f'({uploaded_file.size / 1024:.1f} KB)'
-    )
-    file_bytes = uploaded_file.getvalue()
-    crop_whitespace = uploaded_file.name.lower().endswith((".docx", ".doc"))
-    signature = hashlib.sha256(
-        uploaded_file.name.encode("utf-8", errors="replace")
-        + file_bytes
-        + template.encode("utf-8")
-        + str(pages_per_sheet).encode("ascii")
-        + str(crop_whitespace).encode("ascii")
-    ).hexdigest()
+if template == "Template 1":
+    if uploaded_file is None:
+        st.info(
+            "ارفع ملفًا لعرض المعاينة هنا تلقائيًا."
+            if is_arabic
+            else "Upload a file to see its preview here automatically."
+        )
+        st.session_state.pop("cornell_pdf", None)
+        st.session_state.pop("cornell_filename", None)
+        st.session_state.pop("cornell_signature", None)
+    else:
+        st.success(
+            f'{lang["ready"]}: {uploaded_file.name} '
+            f'({uploaded_file.size / 1024:.1f} KB)'
+        )
+        file_bytes = uploaded_file.getvalue()
+        crop_whitespace = uploaded_file.name.lower().endswith((".docx", ".doc"))
+        signature = hashlib.sha256(
+            uploaded_file.name.encode("utf-8", errors="replace")
+            + file_bytes
+            + template.encode("utf-8")
+            + str(pages_per_sheet).encode("ascii")
+            + str(crop_whitespace).encode("ascii")
+            + str(hide_notes).encode("ascii")
+        ).hexdigest()
 
-    if st.session_state.get("cornell_signature") != signature:
-        try:
-            with st.spinner(
-                "جارٍ إنشاء المعاينة..." if is_arabic else "Generating preview..."
-            ):
-                source_pdf = convert_to_pdf(uploaded_file)
-                output_pdf = build_pdf(
-                    source_pdf,
-                    template,
-                    pages_per_sheet=pages_per_sheet,
-                    crop_whitespace=crop_whitespace,
+        if st.session_state.get("cornell_signature") != signature:
+            try:
+                with st.spinner(
+                    "جارٍ إنشاء المعاينة..." if is_arabic else "Generating preview..."
+                ):
+                    source_pdf = convert_to_pdf(uploaded_file)
+                    output_pdf = build_pdf(
+                        source_pdf,
+                        template,
+                        pages_per_sheet=pages_per_sheet,
+                        crop_whitespace=crop_whitespace,
+                        hide_notes=hide_notes,
+                    )
+                base_name = uploaded_file.name.rsplit(".", 1)[0]
+                st.session_state["cornell_pdf"] = output_pdf
+                st.session_state["cornell_filename"] = f"{base_name}_cornell.pdf"
+                st.session_state["cornell_signature"] = signature
+                st.session_state["cornell_preview_page"] = 1
+            except Exception as exc:
+                st.session_state.pop("cornell_pdf", None)
+                st.session_state.pop("cornell_filename", None)
+                st.session_state.pop("cornell_signature", None)
+                st.error(f'{lang["error"]}: {exc}')
+
+        if (
+            st.session_state.get("cornell_signature") == signature
+            and "cornell_pdf" in st.session_state
+        ):
+            output_pdf = st.session_state["cornell_pdf"]
+            with fitz.open(stream=output_pdf, filetype="pdf") as output_doc:
+                output_page_count = output_doc.page_count
+
+            st.markdown(
+                f'<div class="section-title">{"المعاينة المباشرة" if is_arabic else "Live preview"}</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"عدد الصفحات الناتجة: {output_page_count}"
+                if is_arabic
+                else f"Output pages: {output_page_count}"
+            )
+            selected_preview_page = st.slider(
+                "صفحة المعاينة" if is_arabic else "Preview page",
+                min_value=1,
+                max_value=max(1, output_page_count),
+                value=min(
+                    st.session_state.get("cornell_preview_page", 1),
+                    max(1, output_page_count),
+                ),
+                key="cornell_preview_slider",
+            )
+            st.session_state["cornell_preview_page"] = selected_preview_page
+            st.image(
+                render_pdf_page(output_pdf, selected_preview_page - 1),
+                caption=(
+                    f"صفحة {selected_preview_page} من {output_page_count}"
+                    if is_arabic
+                    else f"Page {selected_preview_page} of {output_page_count}"
+                ),
+                use_container_width=True,
+            )
+            st.download_button(
+                label=f"⬇️ {lang['download_button']}",
+                data=output_pdf,
+                file_name=st.session_state["cornell_filename"],
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+                key="download_cornell_pdf",
+            )
+
+else:
+    st.markdown(
+        f'<div class="section-title">{"إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي" if is_arabic else "Create AI Lecture Notes"}</div>',
+        unsafe_allow_html=True,
+    )
+    st.write(
+        "سيحلّل Gemini كل شريحة عند الضغط على الزر فقط، ثم ينشئ ملف PDF جديدًا."
+        if is_arabic
+        else "Gemini will analyze each slide only after you press the button, then create a separate PDF."
+    )
+
+    if uploaded_file is not None:
+        st.success(
+            f'{lang["ready"]}: {uploaded_file.name} '
+            f'({uploaded_file.size / 1024:.1f} KB)'
+        )
+
+    ai_current_signature = None
+    if uploaded_file is not None:
+        ai_current_signature = hashlib.sha256(
+            uploaded_file.name.encode("utf-8", errors="replace")
+            + uploaded_file.getvalue()
+            + str(pages_per_sheet).encode("ascii")
+        ).hexdigest()
+
+    if st.button(
+        "✨ إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي"
+        if is_arabic
+        else "✨ Create AI Lecture Notes",
+        type="primary",
+        use_container_width=True,
+        key="create_ai_lecture_notes_button",
+    ):
+        if uploaded_file is None:
+            st.warning(lang["select_pdf"])
+        else:
+            try:
+                from ai_assistant import analyze_pages
+                from educational_pdf import make_ai_lecture_notes_pdf
+
+                with st.spinner(
+                    "جارٍ تحليل الشرائح وإنشاء ملف الملاحظات..."
+                    if is_arabic
+                    else "Analyzing slides and creating your notes PDF..."
+                ):
+                    source_pdf = convert_to_pdf(uploaded_file)
+                    page_notes = analyze_pages(source_pdf)
+                    ai_pdf = make_ai_lecture_notes_pdf(
+                        source_pdf,
+                        page_notes,
+                        pages_per_sheet=pages_per_sheet,
+                    )
+
+                base_name = uploaded_file.name.rsplit(".", 1)[0]
+                st.session_state["ai_notes_pdf"] = ai_pdf
+                st.session_state["ai_notes_filename"] = f"{base_name}_ai_lecture_notes.pdf"
+                st.session_state["ai_notes_source_name"] = uploaded_file.name
+                st.session_state["ai_notes_signature"] = ai_current_signature
+                st.session_state["ai_notes_preview_page"] = 1
+                st.success(
+                    "تم إنشاء ملاحظات المحاضرة بنجاح."
+                    if is_arabic
+                    else "AI lecture notes created successfully."
                 )
-            base_name = uploaded_file.name.rsplit(".", 1)[0]
-            st.session_state["cornell_pdf"] = output_pdf
-            st.session_state["cornell_filename"] = f"{base_name}_cornell.pdf"
-            st.session_state["cornell_signature"] = signature
-            st.session_state["cornell_preview_page"] = 1
-        except Exception as exc:
-            st.session_state.pop("cornell_pdf", None)
-            st.session_state.pop("cornell_filename", None)
-            st.session_state.pop("cornell_signature", None)
-            st.error(f'{lang["error"]}: {exc}')
+            except Exception as exc:
+                st.error(
+                    f"تعذّر إنشاء ملاحظات الذكاء الاصطناعي: {exc}"
+                    if is_arabic
+                    else f"Could not create AI lecture notes: {exc}"
+                )
 
     if (
-        st.session_state.get("cornell_signature") == signature
-        and "cornell_pdf" in st.session_state
+        st.session_state.get("ai_notes_pdf")
+        and ai_current_signature
+        and st.session_state.get("ai_notes_signature") == ai_current_signature
     ):
-        output_pdf = st.session_state["cornell_pdf"]
-        with fitz.open(stream=output_pdf, filetype="pdf") as output_doc:
-            output_page_count = output_doc.page_count
+        ai_pdf = st.session_state["ai_notes_pdf"]
+        with fitz.open(stream=ai_pdf, filetype="pdf") as ai_doc:
+            ai_page_count = ai_doc.page_count
 
         st.markdown(
-            f'<div class="section-title">{"المعاينة المباشرة" if is_arabic else "Live preview"}</div>',
+            f'<div class="section-title">{"معاينة ملاحظات الذكاء الاصطناعي" if is_arabic else "AI Notes Preview"}</div>',
             unsafe_allow_html=True,
         )
         st.caption(
-            f"عدد الصفحات الناتجة: {output_page_count}"
+            f"عدد الصفحات: {ai_page_count}"
             if is_arabic
-            else f"Output pages: {output_page_count}"
+            else f"Output pages: {ai_page_count}"
         )
-        selected_preview_page = st.slider(
+        ai_preview_page = st.slider(
             "صفحة المعاينة" if is_arabic else "Preview page",
             min_value=1,
-            max_value=max(1, output_page_count),
+            max_value=max(1, ai_page_count),
             value=min(
-                st.session_state.get("cornell_preview_page", 1),
-                max(1, output_page_count),
+                st.session_state.get("ai_notes_preview_page", 1),
+                max(1, ai_page_count),
             ),
-            key="cornell_preview_slider",
+            key="ai_notes_preview_slider",
         )
-        st.session_state["cornell_preview_page"] = selected_preview_page
+        st.session_state["ai_notes_preview_page"] = ai_preview_page
         st.image(
-            render_pdf_page(output_pdf, selected_preview_page - 1),
+            render_pdf_page(ai_pdf, ai_preview_page - 1),
             caption=(
-                f"صفحة {selected_preview_page} من {output_page_count}"
+                f"صفحة {ai_preview_page} من {ai_page_count}"
                 if is_arabic
-                else f"Page {selected_preview_page} of {output_page_count}"
+                else f"Page {ai_preview_page} of {ai_page_count}"
             ),
             use_container_width=True,
         )
         st.download_button(
-            label=f"⬇️ {lang['download_button']}",
-            data=output_pdf,
-            file_name=st.session_state["cornell_filename"],
+            label="⬇️ تنزيل ملاحظات المحاضرة"
+            if is_arabic
+            else "⬇️ Download AI Lecture Notes",
+            data=ai_pdf,
+            file_name=st.session_state.get(
+                "ai_notes_filename", "ai_lecture_notes.pdf"
+            ),
             mime="application/pdf",
             type="primary",
             use_container_width=True,
-            key="download_cornell_pdf",
+            key="download_ai_notes_pdf",
         )
 
 
@@ -674,3 +752,90 @@ st.markdown(
     f'<div class="footer">{lang["footer"]}</div>',
     unsafe_allow_html=True,
 )
+
+
+# --------------------------------------------------
+# AI Assistant — optional lecture analysis
+# --------------------------------------------------
+from ai_assistant import analyze_lecture
+
+st.divider()
+st.subheader(
+    "المساعد الذكي للمحاضرات"
+    if is_arabic
+    else "AI Lecture Assistant"
+)
+
+st.write(
+    "حلّل محاضرتك للحصول على شرح عربي ونقاط مهمة وأسئلة اختبار."
+    if is_arabic
+    else "Analyze your lecture to generate Arabic explanations, "
+         "high-yield points, and practice questions."
+)
+
+question_count = st.selectbox(
+    "عدد أسئلة MCQ" if is_arabic else "Number of MCQs",
+    options=[5, 10, 15, 20],
+    index=1,
+    key="ai_question_count",
+)
+
+if st.button(
+    "✨ حلّل المحاضرة بالذكاء الاصطناعي"
+    if is_arabic
+    else "✨ Analyze Lecture with AI",
+    type="primary",
+    use_container_width=True,
+    key="analyze_lecture_button",
+):
+    if uploaded_file is None:
+        st.warning(
+            "ارفع ملف المحاضرة أولًا."
+            if is_arabic
+            else "Please upload a lecture file first."
+        )
+    else:
+        try:
+            with st.spinner(
+                "جارٍ تحليل المحاضرة... قد يستغرق ذلك بعض الوقت."
+                if is_arabic
+                else "Analyzing lecture... this may take a moment."
+            ):
+                source_pdf = convert_to_pdf(uploaded_file)
+                analysis = analyze_lecture(
+                    source_pdf,
+                    question_count=question_count,
+                )
+
+            st.session_state["ai_lecture_analysis"] = analysis
+            st.session_state["ai_lecture_filename"] = uploaded_file.name
+
+        except Exception as exc:
+            st.error(
+                f"تعذّر تحليل المحاضرة: {exc}"
+                if is_arabic
+                else f"Lecture analysis failed: {exc}"
+            )
+
+if st.session_state.get("ai_lecture_analysis"):
+    st.markdown("---")
+    st.markdown(
+        "### نتائج تحليل المحاضرة"
+        if is_arabic
+        else "### Lecture Analysis Results"
+    )
+    st.caption(
+        st.session_state.get("ai_lecture_filename", "")
+    )
+    st.markdown(st.session_state["ai_lecture_analysis"])
+
+    st.download_button(
+        label="تنزيل الشرح النصي"
+        if is_arabic
+        else "Download Study Notes",
+        data=st.session_state["ai_lecture_analysis"].encode("utf-8"),
+        file_name="lecture_study_notes.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="download_ai_study_notes",
+    )

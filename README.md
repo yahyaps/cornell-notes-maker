@@ -73,3 +73,12 @@ Run the application:
 - Office document conversion may vary depending on formatting and available fonts.
 - Review the preview before printing.
 EOF
+
+Template 2 update
+
+Replace these two files in ~/cornell_notes_mvp:
+- app.py
+- educational_pdf.py
+
+Back up your current files first. Keep ai_assistant.py unchanged.
+Template 1 processing remains in the same branch; Template 2 calls analyze_pages only after the user presses Create AI Lecture Notes.

@@ -1,3 +1,6 @@
 streamlit
 PyMuPDF
 Pillow
+google-genai
+weasyprint
+pypdf
