@@ -1,0 +1,33 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: cornell-notes-maker
+    runtime: docker
+    plan: starter          # always on; the free plan sleeps when idle. Use "standard" (2 GB) for many users
+    healthCheckPath: /_stcore/health
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false        # set the value in the Render dashboard, never in git
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_SLIDE_WORKERS
+        value: "8"
+      - key: GEMINI_MAX_CONCURRENT
+        value: "12"
+      - key: AI_RUNS_PER_HOUR
+        value: "10"
+      - key: CHAT_MESSAGES_PER_HOUR
+        value: "60"
+      - key: DAILY_SLIDE_BUDGET
+        value: "3000"
+      - key: MAX_AI_SLIDES
+        value: "150"
+      - key: APP_ACCESS_CODE
+        sync: false        # optional: set to require a code for AI features
+      - key: SUPPORT_EMAIL_TO
+        sync: false        # receives support tickets; never shown to visitors
+      - key: SMTP_USER
+        sync: false        # account that sends tickets (e.g. a Gmail address)
+      - key: SMTP_PASSWORD
+        sync: false        # that account's app password

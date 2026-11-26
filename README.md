@@ -1,75 +1,128 @@
-cd /home/yahya/cornell_notes_mvp
-
-cat > README.md <<'EOF'
 # Cornell Notes Maker
 
-A bilingual Arabic/English Streamlit application that converts lecture documents into organized Cornell-style PDF notes with a live preview.
+A bilingual (Arabic/English) Streamlit app that turns university lectures into
+AI-explained Cornell study notes (A4 PDF) and offers an AI lecture assistant,
+powered by Google Gemini.
 
 ## Features
 
-- Two selectable Cornell note templates.
-- Choose between one or two source pages per output sheet.
-- Live PDF preview that updates when the uploaded file or layout settings change.
-- Download the same PDF displayed in the preview.
-- Supports PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, JPEG, and TXT files.
-- Converts Microsoft Word and PowerPoint documents to PDF using LibreOffice.
-- Supports Arabic and English interface languages.
-- Preserves the original uploaded file without modifying it.
-- Exports US Letter pages (8.5 x 11 inches).
+- **AI Cornell Notes (A4 portrait).** Gemini explains every slide in Arabic. Each
+  slide becomes a study unit: explanation and key points on the left; on the right,
+  the original slide (kept as vector content), a review question and a summary.
+  One or two slides per sheet. Long explanations continue on the next page and are
+  never cut; a slide whose analysis fails keeps its place and can be retried alone.
+- **Two page layouts.** One slide per page puts the slide across the full page
+  width for easy reading; two per sheet places it beside the explanation and
+  packs units by their real height to save paper.
+- **AI Lecture Assistant.** A full study report (Arabic explanation, high-yield
+  points, mind-map plans, MCQs) and a chat that answers from the lecture with page
+  citations.
+- **Built for long lectures.** Slides are analyzed in parallel with retries and a
+  live progress bar (a 38-slide lecture takes about 1.5–2 minutes).
+- **Correct Arabic + English text.** One bundled font for both scripts; English
+  terms, numbers and units keep their order inside Arabic sentences; PDF text is
+  selectable and searchable.
+- Uploads: PDF, PPTX/PPT, DOCX/DOC, PNG/JPG, TXT (Office files are converted with
+  LibreOffice; the original file is never modified).
 
-## Technology Stack
+## Project layout
 
-- Python 3.12
-- Streamlit
-- PyMuPDF
-- Pillow
-- LibreOffice Writer and Impress
+| Path | Purpose |
+|---|---|
+| `app.py` | Streamlit interface |
+| `ui_text.py` | Interface text in Arabic and English |
+| `ai_assistant.py` | Gemini calls: per-slide analysis, study report, chat; retries and error kinds |
+| `document_io.py` | Upload → PDF conversion and validation, preview rendering |
+| `note_templates/` | PDF templates; `__init__.py` registers them, `ai_cornell.py` is the current one |
+| `usage_limits.py` | Rate limits, daily budget, optional access code |
+| `support.py` | Support tickets emailed to the owner (address kept server-side) |
+| `static/fonts/` | Almarai (SIL Open Font License) for the PDF and the interface |
+| `static/previews/` | Template thumbnails (`scripts/make_template_previews.py`) |
+| `.streamlit/config.toml` | Production settings and theme (no secrets) |
+| `tests/` | Automated tests |
 
-## Requirements
+## Adding a template
 
-- Python 3.12 or a compatible version.
-- Python packages listed in requirements.txt.
-- LibreOffice Writer and Impress for Office document conversion.
-- Docker (recommended).
+1. Create a module in `note_templates/` exposing
+   `build_pdf(source_pdf_bytes, page_notes, pages_per_sheet=1, lecture_title="")`.
+2. Register it in `note_templates/__init__.py`; the app lists every registered template.
+3. Run `python scripts/make_template_previews.py` to create its thumbnail.
 
-## Run with Docker
+## Run locally
 
-Build the image:
+Requires Python 3.12+ and, for Word/PowerPoint uploads, LibreOffice
+(`libreoffice` on the PATH).
 
-    docker build -t cornell-notes-maker .
+    python -m venv .venv
+    .venv/bin/pip install -r requirements.txt
 
-Start the application:
+Put the Gemini key in `.streamlit/secrets.toml` (git-ignored; keep it readable
+only by you: `chmod 600 .streamlit/secrets.toml`):
 
-    docker run --rm -p 8501:8501 -e PORT=8501 cornell-notes-maker
+    GEMINI_API_KEY = "your-key"
 
-Open http://localhost:8501 in your browser.
+Then:
 
-## Run Locally
+    .venv/bin/streamlit run app.py
 
-Install dependencies:
+## Deploy (Render)
 
-    python -m pip install -r requirements.txt
+The repository includes a `Dockerfile` and a `render.yaml` Blueprint.
 
-For Word and PowerPoint conversion, install LibreOffice and ensure the `libreoffice` command is available.
+1. Check the image builds: `docker build -t cornell-notes-maker .`
+2. In Render, create the service from the Blueprint (or a Docker web service).
+3. In the service's **Environment** settings, add `GEMINI_API_KEY`. Never commit it.
+4. Optional: set `APP_ACCESS_CODE` to require a code before AI features are used.
 
-Run the application:
+Plan: the free plan sleeps when idle; use at least **Starter**. In our
+measurements one server stays around 250–350 MB while handling a 38-slide
+lecture; choose **Standard** (2 GB) for many simultaneous users.
 
-    streamlit run app.py
+### Settings (environment variables)
 
-## How to Use
+| Variable | Default | Meaning |
+|---|---|---|
+| `GEMINI_API_KEY` | — | Required. Gemini API key |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Model name |
+| `GEMINI_SLIDE_WORKERS` | 8 | Slides analyzed at once for one lecture |
+| `GEMINI_MAX_CONCURRENT` | 12 | Gemini requests in flight across all users |
+| `AI_RUNS_PER_HOUR` | 10 | AI jobs per visitor per hour |
+| `CHAT_MESSAGES_PER_HOUR` | 60 | Chat questions per visitor per hour |
+| `DAILY_SLIDE_BUDGET` | 3000 | Slides analyzed per day, all users |
+| `MAX_AI_SLIDES` | 150 | Largest lecture accepted |
+| `APP_ACCESS_CODE` | — | If set, required before using AI |
+| `SUPPORT_EMAIL_TO` | — | Receives support tickets (never shown to visitors) |
+| `SMTP_USER` / `SMTP_PASSWORD` | — | Account and app password that send tickets |
+| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / 465 | Mail server (SSL) |
 
-1. Upload a lecture file.
-2. Choose one of the two Cornell templates.
-3. Select one or two source pages per output sheet.
-4. Review the live preview.
-5. Adjust the template or page layout as needed.
-6. Download the generated Cornell PDF.
+## Security
 
-## Notes and Limitations
+- The API key lives only in the host's environment (or the local, git-ignored
+  `secrets.toml`). It is never sent to the browser, never logged (logs are
+  redacted), and never passed to LibreOffice (which runs with a minimal
+  environment because Streamlit copies secrets into `os.environ`).
+- Visitors never see tracebacks (`showErrorDetails = "none"`); unexpected errors
+  show a reference code that matches a server log line.
+- Abuse limits protect the key's quota: per-visitor hourly limits (keyed on the
+  address Render's proxy appends to `X-Forwarded-For`), a daily slide budget, a
+  server-wide concurrency cap and an optional access code with attempt limiting.
+- Support tickets are sent by the server; the owner's address stays in server
+  settings and is never part of the page or the repository. Email header
+  injection is rejected and tickets are rate-limited per visitor.
+- Uploads are capped at 50 MB; encrypted, corrupt and oversized-image files are
+  rejected; the container runs as a non-root user.
+- In Google AI Studio / Cloud Console, restrict the key to the Generative Language
+  API and set a budget alert. **Rotate the key** if it is ever exposed.
 
-- Source pages are scaled to fit the available content area in the selected Cornell template.
-- Dense slides or documents may require one source page per sheet for improved readability.
-- Cue and summary areas are available for handwritten study notes.
-- Office document conversion may vary depending on formatting and available fonts.
-- Review the preview before printing.
-EOF
+## Tests
+
+    .venv/bin/python -m unittest discover -s tests -t .
+
+The suite runs offline (Gemini is mocked) and covers the template layout rules
+(no clipped or lost text), Arabic/English text handling, the parallel analysis
+with retries, usage limits, and the full interface through Streamlit's AppTest.
+
+- After changing the design, run `python tests/render_samples.py` and review the
+  PNGs in `tests/output/`.
+- `tests/fixtures/sample_lecture.pdf` is synthetic (`python tests/make_fixtures.py`).
+  Real lectures for manual checks go in `tests/fixtures/private/` (git-ignored).

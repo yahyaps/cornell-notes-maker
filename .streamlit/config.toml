@@ -1,0 +1,41 @@
+[server]
+# Uploads larger than this are refused by Streamlit before reaching the app.
+maxUploadSize = 50
+enableXsrfProtection = true
+# Serves static/ (the bundled fonts) at /app/static/.
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Never show tracebacks to visitors; errors are logged on the server.
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#4D7D67"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F6F4"
+textColor = "#404042"
+baseFontSize = 17
+borderColor = "#DCE5E0"
+baseRadius = "0.6rem"
+font = "Almarai, sans-serif"
+headingFont = "Almarai, sans-serif"
+
+[[theme.fontFaces]]
+family = "Almarai"
+url = "app/static/fonts/Almarai-Regular.ttf"
+weight = 400
+
+[[theme.fontFaces]]
+family = "Almarai"
+url = "app/static/fonts/Almarai-Bold.ttf"
+weight = 700
+
+[[theme.fontFaces]]
+family = "Almarai"
+url = "app/static/fonts/Almarai-ExtraBold.ttf"
+weight = 800

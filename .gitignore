@@ -3,3 +3,11 @@ __pycache__/
 *.pyc
 .env
 .streamlit/secrets.toml
+
+# Local-only test material (real lectures, cached AI output)
+tests/fixtures/private/
+tests/output/
+
+# Editor / tooling leftovers
+*.bak
+*.backup

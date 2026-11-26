@@ -1,676 +1,607 @@
-import io
+"""Streamlit interface for Cornell Notes Maker.
+
+Flow: upload a lecture -> "PDF notes" tab (AI analysis per slide, rendered by
+a note template) or "AI assistant" tab (study report and chat). Expensive
+results are cached in the session per file, so changing a layout option or
+the language never repeats AI work.
+"""
+
 import hashlib
+import logging
+import time
+import uuid
+
 import streamlit as st
-import fitz  # PyMuPDF
-from PIL import Image
 
-import os
-import subprocess
-import tempfile
-from pathlib import Path
+import ai_assistant
+import support
+import usage_limits
+from ai_assistant import AIError
+from document_io import DocumentError, load_document, render_pdf_page
+from note_templates import DEFAULT_TEMPLATE, TEMPLATES
+from ui_text import TEXT
+from usage_limits import LimitExceeded, limiter
 
-# --------------------------------------------------
-# File conversion helper
-# --------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("app")
 
-def convert_to_pdf(uploaded_file):
-    """Convert supported uploads to PDF bytes."""
-    filename = uploaded_file.name.lower()
-    file_bytes = uploaded_file.getvalue()
-
-    if filename.endswith(".pdf"):
-        return file_bytes
-
-    if filename.endswith((".png", ".jpg", ".jpeg")):
-        with Image.open(io.BytesIO(file_bytes)) as image:
-            image = image.convert("RGB")
-            output = io.BytesIO()
-            image.save(output, format="PDF")
-            return output.getvalue()
-
-    if filename.endswith(".txt"):
-        text = file_bytes.decode("utf-8-sig", errors="replace")
-        pdf = fitz.open()
-        try:
-            pdf.new_page(width=595, height=842).insert_textbox(
-                fitz.Rect(45, 45, 550, 795),
-                text,
-                fontsize=10,
-                fontname="helv",
-                lineheight=1.4,
-            )
-            return pdf.tobytes(garbage=4, deflate=True)
-        finally:
-            pdf.close()
-
-    office_extensions = (".docx", ".doc", ".pptx", ".ppt")
-
-    if filename.endswith(office_extensions):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            input_path = Path(temp_dir) / Path(uploaded_file.name).name
-            input_path.write_bytes(file_bytes)
-
-            subprocess.run(
-                [
-                    "libreoffice",
-                    "-env:UserInstallation=file://"
-                    + str(Path(temp_dir) / "lo_profile"),
-                    "--headless",
-                    "--convert-to",
-                    "pdf",
-                    "--outdir",
-                    temp_dir,
-                    str(input_path),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=True,
-            )
-
-            output_path = input_path.with_suffix(".pdf")
-
-            if not output_path.exists():
-                raise ValueError("Office file conversion failed.")
-
-            return output_path.read_bytes()
-
-    raise ValueError(
-        "Unsupported file type. Upload PDF, PNG, JPG, JPEG, TXT, "
-        "DOC, DOCX, PPT, or PPTX."
-    )
-
+UPLOAD_TYPES = ["pdf", "pptx", "ppt", "docx", "doc", "png", "jpg", "jpeg", "txt"]
 
 
 # --------------------------------------------------
-# Page configuration
+# Language and page setup
 # --------------------------------------------------
-st.set_page_config(
-    page_title="Cornell Notes Maker",
-    page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-PAGE_W = 8.5 * 72
-PAGE_H = 11 * 72
+def initial_language():
+    requested = st.query_params.get("lang")
+    if requested in TEXT:
+        return requested
+    locale = (st.context.locale or "").lower()
+    return "ar" if locale.startswith("ar") or not locale else "en"
 
 
-# --------------------------------------------------
-# Language support
-# --------------------------------------------------
-TRANSLATIONS = {
-    "en": {
-        "title": "Cornell Notes Maker",
-        "subtitle": "Turn lecture PDFs into clean Cornell notes.",
-        "subtitle2": "Choose one or two source pages per sheet and preview before download.",
-        "upload_title": "1. Upload your lecture",
-        "upload_help": "Upload your file by dragging and dropping it below, or browse your device.",
-        "drop_title": "Drop your file here",
-        "drop_description": "Drag your lecture file into the upload area below",
-        "drop_hint": "PDF, Word, PowerPoint, images, or TXT • Original file unchanged",
-        "browse": "Click Browse files to choose a file",
-        "template_title": "2. Choose your template",
-        "template_help": "Choose the Cornell layout that suits your study style.",
-        "template1": "Template 1 — Cue column + Notes + Summary",
-        "template2": "Template 2 — Class / Date / Topic + Main Points + Notes",
-        "create_title": "3. Create your notes",
-        "create_help": "Your document will contain two vertically stacked elements per page, without writing lines behind them.",
-        "create_button": "Create Cornell PDF",
-        "download_button": "Download Cornell PDF",
-        "select_pdf": "Please upload a file first.",
-        "ready": "File ready",
-        "creating": "Creating your Cornell PDF...",
-        "success": "Your Cornell PDF is ready!",
-        "error": "Could not create the PDF",
-        "footer": "Cornell Notes Maker • Powered by PyMuPDF",
-        "language": "Language",
-        "english": "English",
-        "arabic": "العربية",
-    },
-    "ar": {
-        "title": "منشئ ملاحظات كورنيل",
-        "subtitle": "حوّل ملفات المحاضرات والمستندات إلى ملاحظات كورنيل منظمة.",
-        "subtitle2": "اختر صفحة أو صفحتين في كل ورقة، وشاهد المعاينة قبل التنزيل.",
-        "upload_title": "١. ارفع ملف المحاضرة",
-        "upload_help": "يمكنك سحب الملف (PDF، صور، أو نص) وإفلاته في منطقة الرفع أدناه، أو اختيار الملف من جهازك.",
-        "drop_title": "أفلت الملف هنا",
-        "drop_description": "اسحب ملف المحاضرة وأفلته داخل مساحة رفع الملف أدناه",
-        "drop_hint": "ملفات PDF وWord وPowerPoint والصور وTXT • لن يتم تعديل الملف الأصلي",
-        "browse": "أو اضغط على زر اختيار الملفات لتحديد المحاضرة",
-        "template_title": "٢. اختر قالب كورنيل",
-        "template_help": "اختر تصميم الملاحظات المناسب لطريقة دراستك.",
-        "template1": "القالب الأول — عمود الأسئلة + الملاحظات + الملخص",
-        "template2": "القالب الثاني — الصف والتاريخ والموضوع + النقاط الرئيسية والملاحظات",
-        "create_title": "٣. أنشئ ملف الملاحظات",
-        "create_help": "ستحتوي كل صفحة على محتوى مرتب عموديًا، دون خطوط كتابة خلف الشرائح.",
-        "create_button": "إنشاء ملف كورنيل PDF",
-        "download_button": "تنزيل ملف كورنيل PDF",
-        "select_pdf": "يرجى رفع ملف أولًا.",
-        "ready": "الملف جاهز",
-        "creating": "جارٍ إنشاء ملف كورنيل...",
-        "success": "أصبح ملف كورنيل جاهزًا!",
-        "error": "تعذّر إنشاء ملف PDF",
-        "footer": "منشئ ملاحظات كورنيل • يعمل باستخدام PyMuPDF",
-        "language": "اللغة",
-        "english": "English",
-        "arabic": "العربية",
-    },
-}
+if "lang" not in st.session_state:
+    st.session_state.lang = initial_language()
+if st.session_state.get("lang_select") in TEXT:
+    st.session_state.lang = st.session_state.lang_select
 
-# Keep the selected language when Streamlit reruns the app.
-if "language" not in st.session_state:
-    st.session_state.language = "en"
+lang = st.session_state.lang
+T = TEXT[lang]
+rtl = lang == "ar"
 
-language_col, spacer_col = st.columns([1, 4])
+st.set_page_config(page_title=T["app_title"], page_icon="📘", layout="centered")
+st.query_params["lang"] = lang
 
-with language_col:
-    selected_language = st.selectbox(
-        "Language / اللغة",
-        options=["en", "ar"],
-        format_func=lambda value: (
-            "English" if value == "en" else "العربية"
-        ),
-        index=0 if st.session_state.language == "en" else 1,
-        key="language_selector",
-    )
-
-st.session_state.language = selected_language
-lang = TRANSLATIONS[selected_language]
-is_arabic = selected_language == "ar"
+def css_text(text):
+    """Text for a CSS `content:` value (quotes and backslashes escaped)."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
-# --------------------------------------------------
-# Bilingual styling and header
-# --------------------------------------------------
-direction = "rtl" if is_arabic else "ltr"
-text_align = "right" if is_arabic else "left"
+st.html(f"""
+<style>
+  /* Layout: fluid on phones, comfortable width on tablets and laptops. */
+  [data-testid="stMainBlockContainer"] {{
+    max-width: 1120px; padding: 2.4rem 2rem 3rem;
+    direction: {"rtl" if rtl else "ltr"}; text-align: {"right" if rtl else "left"};
+  }}
+  @media (max-width: 640px) {{
+    [data-testid="stMainBlockContainer"] {{ padding: 1.2rem .9rem 2rem; }}
+  }}
+  /* Sliders and file names read left-to-right in both languages. */
+  [data-testid="stSlider"], [data-testid="stFileUploaderFileName"] {{ direction: ltr; }}
 
-st.markdown(
-    f"""
-    <style>
-    .block-container {{
-        max-width: 1050px;
-        padding-top: 1.8rem;
-        padding-bottom: 3rem;
-    }}
+  .brand {{ display: flex; align-items: center; gap: .7rem; }}
+  .brand-mark {{ width: 2.1rem; height: auto; flex-shrink: 0; }}
+  .brand-name {{ font-size: 1.15rem; font-weight: 800; color: #2F5A47; }}
+  .tagline {{ color: #5E6063; font-size: 1.1rem; line-height: 1.8; margin: .6rem 0 0;
+    max-width: 38rem; }}
 
-    .hero {{
-        direction: {direction};
-        text-align: {text_align};
-        padding: 2rem;
-        border-radius: 20px;
-        background: linear-gradient(135deg, #edf2f7, #f8fafc);
-        border: 1px solid #dbe3eb;
-        margin-bottom: 1.8rem;
-    }}
+  /* Hero: the copy and a real page of the output, side by side. */
+  .hero {{ display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+    gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center; margin: 1.6rem 0 .6rem; }}
+  .hero h1 {{ font-size: clamp(2rem, 4.6vw, 2.9rem); font-weight: 800; line-height: 1.3;
+    color: #2F5A47; margin: 0 0 1rem; padding: 0; }}
+  .hero-text {{ font-size: clamp(1.08rem, 1.6vw, 1.25rem); line-height: 1.9; color: #404042;
+    max-width: 34rem; margin: 0 0 1.6rem; }}
+  .hero h2 {{ font-size: 1.05rem; font-weight: 800; color: #404042; margin: 0 0 .7rem;
+    padding: 0; }}
+  .parts {{ list-style: none; margin: 0; padding: 0; display: grid; gap: .65rem; }}
+  .parts li {{ display: grid; grid-template-columns: .9rem 1fr; gap: .7rem;
+    align-items: start; }}
+  .parts p {{ margin: 0; font-size: 1.02rem; line-height: 1.75; }}
+  .parts b {{ color: #2F5A47; }}
+  .part-text {{ color: #5E6063; }}
+  /* Swatches echo the boxes on the PDF page so the legend maps onto the image. */
+  .swatch {{ width: .9rem; height: .9rem; border-radius: .15rem; margin-top: .45rem; }}
+  .swatch-explain {{ background: #404042; }}
+  .swatch-points {{ background: #EEF4F1; border-inline-start: 3px solid #4D7D67; }}
+  .swatch-review {{ background: #FFFFFF; border: 1.5px solid #CFDDD5; }}
+  .swatch-summary {{ background: #F6F6F4; border: 1.5px solid #CFDDD5; }}
+  .hero-after {{ color: #5E6063; font-size: 1rem; margin: 1.1rem 0 0; }}
+  .hero-sheet {{ margin: 0; justify-self: center; width: min(100%, 25rem); }}
+  .hero-sheet img {{ display: block; width: 100%; height: auto; border-radius: .35rem;
+    border: 1px solid #DCE5E0; box-shadow: 0 1.2rem 2.4rem -1.4rem rgba(47, 90, 71, .45); }}
+  /* Phones: the template card right below shows the same page, so the hero
+     keeps only the words and the upload area moves up. */
+  @media (max-width: 760px) {{
+    .hero {{ grid-template-columns: 1fr; }}
+    .hero-sheet {{ display: none; }}
+  }}
 
-    .hero h1 {{
-        color: #243b53;
-        margin-bottom: 0.7rem;
-        font-size: 2.2rem;
-        font-weight: 800;
-    }}
+  .step {{ font-weight: 800; font-size: clamp(1.2rem, 2.2vw, 1.45rem); color: #404042;
+    margin: 1.6rem 0 .7rem; }}
+  .muted {{ color: #5E6063; font-size: 1rem; line-height: 1.85; }}
+  .template-name {{ font-weight: 800; font-size: 1.2rem; color: #4D7D67; margin-bottom: .4rem; }}
 
-    .hero p {{
-        color: #526477;
-        margin-bottom: 0;
-        font-size: 1rem;
-        line-height: 1.9;
-    }}
+  /* Upload area: larger target, translated instructions. */
+  /* The one bold element: the upload area is a Cornell notebook sheet, with
+     ruled lines and the sage margin rule of the cue column. */
+  [data-testid="stFileUploaderDropzone"] {{ position: relative; min-height: 10rem;
+    padding-block: 1.8rem; padding-inline: 5.4rem 1.6rem;
+    border: 1.5px solid #CFDDD5; border-radius: .5rem;
+    background-color: #FFFFFF;
+    background-image: linear-gradient({"to left" if rtl else "to right"},
+        transparent 4.2rem, #4D7D67 4.2rem, #4D7D67 calc(4.2rem + 2px), transparent calc(4.2rem + 2px)),
+      repeating-linear-gradient(to bottom, transparent 0 1.95rem, #E3ECE7 1.95rem 2rem); }}
+  [data-testid="stFileUploaderDropzone"]:hover {{ border-color: #4D7D67; }}
+  [data-testid="stFileUploaderDropzoneInstructions"] > div {{ display: none; }}
+  [data-testid="stFileUploaderDropzoneInstructions"]::before {{
+    content: "{css_text(T["upload_drop"])}"; font-size: 1.1rem; font-weight: 700;
+    color: #404042; }}
+  /* Only the browse button (kind=secondary); the file's delete button keeps its icon. */
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"] {{ min-height: 2.8rem;
+    padding: 0 1.4rem; border-radius: .7rem; }}
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"] > div {{ display: none; }}
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"]::after {{
+    content: "{css_text(T["upload_button"])}"; font-size: 1rem; font-weight: 700; }}
 
-    .section-title {{
-        direction: {direction};
-        text-align: {text_align};
-        color: #334e68;
-        font-weight: 750;
-        font-size: 1.2rem;
-        margin: 1.4rem 0 0.5rem 0;
-    }}
+  /* Tabs, buttons and messages sized for touch screens. */
+  [data-testid="stTab"] p {{ font-size: 1.1rem; font-weight: 700; }}
+  [data-testid="stButtonGroup"] button p {{ font-size: 1rem; }}
+  /* Segmented controls draw their joined borders for left-to-right only. */
+  [data-testid="stButtonGroup"] [role="radiogroup"] {{ direction: ltr; }}
+  .stButton button, .stDownloadButton button, .stFormSubmitButton button {{
+    min-height: 3rem; font-size: 1.05rem; border-radius: .75rem; }}
+  [data-testid="stImage"] img {{ border: 1px solid #DCE5E0; border-radius: .6rem; }}
 
-    div[data-testid="stFileUploader"] {{
-        border: 2px dashed #829ab1;
-        border-radius: 18px;
-        padding: 1.5rem;
-        background: rgba(130, 154, 177, 0.08);
-        direction: {direction};
-    }}
+  .footer {{ color: #7A7C80; font-size: .95rem; text-align: center; margin-top: 3rem;
+    padding-top: 1.4rem; border-top: 1px solid #E6ECE8; line-height: 2; }}
 
-    div[data-testid="stFileUploader"] section {{
-        border: none;
-        background: transparent;
-        min-height: 120px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }}
-
-    div[data-testid="stButton"] button,
-    div[data-testid="stDownloadButton"] button {{
-        width: 100%;
-        min-height: 3rem;
-        border-radius: 10px;
-        font-weight: 650;
-    }}
-
-    .footer {{
-        direction: {direction};
-        text-align: center;
-        color: #829ab1;
-        padding-top: 1rem;
-    }}
-    </style>
-
-    <div class="hero">
-        <h1>📚 {lang["title"]}</h1>
-        <p>{lang["subtitle"]}<br>{lang["subtitle2"]}</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+  /* AI text: lists follow the interface direction, and each paragraph takes
+     the direction of its own first letter (Arabic or English). */
+  [data-testid="stChatMessage"], [data-testid="stMarkdownContainer"] {{
+    direction: {"rtl" if rtl else "ltr"}; }}
+  [data-testid="stMarkdownContainer"] :is(p, li, h1, h2, h3, h4, td, th) {{
+    unicode-bidi: plaintext; text-align: start; }}
+</style>
+""")
 
 
 # --------------------------------------------------
-# PDF drawing helpers
+# Helpers
 # --------------------------------------------------
-def draw_line(page, x1, y1, x2, y2,
-              color=(0.75, 0.75, 0.75), width=0.5):
-    page.draw_line((x1, y1), (x2, y2), color=color, width=width)
+def show_error(kind, **fields):
+    message = T["errors"].get(kind) or T["errors"]["unknown"]
+    if "{ref}" in message and "ref" not in fields:
+        fields["ref"] = "-"
+    st.error(message.format(**fields), icon="⚠️")
 
 
-def add_label(page, x, y, text, size=9, font="helv"):
-    page.insert_text((x, y), text, fontsize=size, fontname=font)
+def show_unexpected(exc, what):
+    ref = uuid.uuid4().hex[:8]
+    logger.error("%s failed [ref %s]: %s", what, ref, ai_assistant.redact(repr(exc), 1000))
+    show_error("unknown", ref=ref)
 
 
-def get_content_clip(src_page, margin=12):
-    """Find text/image block bounds to reduce excessive whitespace on Word pages."""
-    blocks = src_page.get_text("blocks")
-    rects = []
-    for block in blocks:
-        if len(block) >= 5:
-            x0, y0, x1, y1 = block[:4]
-            if x1 > x0 and y1 > y0:
-                rects.append(fitz.Rect(x0, y0, x1, y1))
-    if not rects:
-        return src_page.rect
-    clip = rects[0]
-    for rect in rects[1:]:
-        clip |= rect
-    clip = fitz.Rect(
-        max(src_page.rect.x0, clip.x0 - margin),
-        max(src_page.rect.y0, clip.y0 - margin),
-        min(src_page.rect.x1, clip.x1 + margin),
-        min(src_page.rect.y1, clip.y1 + margin),
-    )
-    return clip if not clip.is_empty else src_page.rect
-
-
-def place_source_page(page, rect, src, source_page_number, crop_whitespace=False):
-    source_page = src[source_page_number]
-    kwargs = {"keep_proportion": True}
-    if crop_whitespace:
-        kwargs["clip"] = get_content_clip(source_page)
-    page.show_pdf_page(rect, src, source_page_number, **kwargs)
-
-
-def make_page(out, src, first, second, number, total, template, crop_whitespace=False):
-    page = out.new_page(width=PAGE_W, height=PAGE_H)
-
-    if template == "Template 1":
-        cue_w = 180
-        top = 61
-        summary_h = 144
-        bottom = PAGE_H - summary_h
-
-        # Cue column
-        page.draw_rect(
-            fitz.Rect(0, top, cue_w, bottom),
-            color=None,
-            fill=(0.91, 0.95, 0.88),
-        )
-
-        # Notes area outline
-        page.draw_rect(
-            fitz.Rect(cue_w, top, PAGE_W, bottom),
-            color=(0.65, 0.68, 0.65),
-            width=0.6,
-        )
-
-        # Summary area
-        page.draw_rect(
-            fitz.Rect(0, bottom, PAGE_W, PAGE_H),
-            color=(0.65, 0.68, 0.65),
-            fill=(0.98, 0.96, 0.88),
-            width=0.6,
-        )
-
-        add_label(page, 12, 20, "CORNELL NOTES", 11, "hebo")
-        add_label(page, cue_w + 8, top + 17, "NOTE-TAKING AREA", 9, "hebo")
-        add_label(page, 12, bottom + 22, "SUMMARY", 10, "hebo")
-        add_label(page, PAGE_W - 90, 20, f"Page {number}/{total}", 8)
-
-        page.insert_textbox(
-            fitz.Rect(5, 210, cue_w - 5, 390),
-            "CUES / QUESTIONS",
-            fontsize=12,
-            fontname="hebo",
-            rotate=90,
-            align=1,
-        )
-
-        target = fitz.Rect(
-            cue_w + 6,
-            top + 30,
-            PAGE_W - 6,
-            bottom - 6,
-        )
-
+def show_limit(exc, pages=0):
+    if exc.kind == "rate":
+        show_error("rate", minutes=max(1, round(exc.retry_after / 60)))
+    elif exc.kind == "too_many_slides":
+        show_error("too_many_slides", pages=pages, limit=usage_limits.MAX_AI_SLIDES)
     else:
-        margin = 28
-        header_h = 66
-        summary_h = 126
-        main_w = 150
+        show_error(exc.kind)
 
-        # Header
-        page.draw_rect(
-            fitz.Rect(
-                margin, margin,
-                PAGE_W - margin, margin + header_h
-            ),
-            color=(0.55, 0.58, 0.55),
-            width=0.6,
-        )
 
-        add_label(page, margin + 8, margin + 18, "Class:", 9, "hebo")
-        add_label(page, margin + 8, margin + 47, "Topic:", 9, "hebo")
-        add_label(page, PAGE_W - 165, margin + 18, "Date:", 9, "hebo")
-        add_label(
-            page, PAGE_W - 165, margin + 47,
-            "Continued from page:", 7
-        )
+def plain_markdown(text):
+    """AI text for st.markdown with math rendering off: "$...$" would become
+    left-to-right KaTeX that scrambles formulas inside Arabic sentences."""
+    return text.replace("$", "\\$")
 
-        body_top = margin + header_h + 12
-        body_bottom = PAGE_H - margin - summary_h
 
-        # Main Points and Notes columns
-        page.draw_rect(
-            fitz.Rect(margin, body_top, margin + main_w, body_bottom),
-            color=(0.55, 0.58, 0.55),
-            width=0.6,
-        )
-        page.draw_rect(
-            fitz.Rect(
-                margin + main_w, body_top,
-                PAGE_W - margin, body_bottom
-            ),
-            color=(0.55, 0.58, 0.55),
-            width=0.6,
-        )
+def isolate(text):
+    return chr(0x2068) + text + chr(0x2069)
 
-        # Column headings
-        page.draw_rect(
-            fitz.Rect(
-                margin, body_top,
-                margin + main_w, body_top + 24
-            ),
-            color=(0.65, 0.68, 0.65),
-            fill=(0.91, 0.93, 0.90),
-            width=0.6,
-        )
-        page.draw_rect(
-            fitz.Rect(
-                margin + main_w, body_top,
-                PAGE_W - margin, body_top + 24
-            ),
-            color=(0.65, 0.68, 0.65),
-            fill=(0.91, 0.93, 0.90),
-            width=0.6,
-        )
 
-        add_label(page, margin + 10, body_top + 16, "Main Points", 9, "hebo")
-        add_label(
-            page, margin + main_w + 10,
-            body_top + 16, "Notes", 9, "hebo"
-        )
+def human_size(size):
+    return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB"
 
-        target = fitz.Rect(
-            margin + main_w + 5,
-            body_top + 29,
-            PAGE_W - margin - 5,
-            body_bottom - 5,
-        )
 
-        # Summary section
-        sy = PAGE_H - margin - summary_h
-        page.draw_rect(
-            fitz.Rect(margin, sy, PAGE_W - margin, PAGE_H - margin),
-            color=(0.55, 0.58, 0.55),
-            width=0.6,
-        )
-        add_label(page, margin + 10, sy + 16, "Summary:", 9, "hebo")
-        add_label(page, PAGE_W - 90, PAGE_H - 8, f"Page {number}/{total}", 7)
+def human_duration(seconds):
+    if seconds < 60:
+        return T["seconds"].format(n=max(1, round(seconds)))
+    return T["minutes"].format(n=round(seconds / 60))
 
-    
-    # Place one or two source pages inside the Cornell notes area.
-    if second is None:
-        if first is not None:
-            place_source_page(
-                page, target, src, first,
-                crop_whitespace=crop_whitespace,
-            )
-    else:
-        middle = (target.y0 + target.y1) / 2
-        upper = fitz.Rect(target.x0, target.y0, target.x1, middle - 4)
-        lower = fitz.Rect(target.x0, middle + 4, target.x1, target.y1)
-        draw_line(
-            page, target.x0, middle, target.x1, middle,
-            color=(0.78, 0.80, 0.78), width=0.5,
-        )
-        if first is not None:
-            place_source_page(
-                page, upper, src, first,
-                crop_whitespace=crop_whitespace,
-            )
-        place_source_page(
-            page, lower, src, second,
-            crop_whitespace=crop_whitespace,
-        )
 
+def visitor():
+    return usage_limits.visitor_id(st.context)
+
+
+def cache(name):
+    """Per-session dict keyed by file signature (and options)."""
+    return st.session_state.setdefault(name, {})
+
+
+def forget_other_files(sig):
+    """Keep memory bounded: drop cached results that belong to older uploads."""
+    for name in ("notes", "pdfs", "reports", "chats", "lecture_text"):
+        store = cache(name)
+        for key in list(store):
+            if (key[0] if isinstance(key, tuple) else key) != sig:
+                del store[key]
+
+
+@st.cache_data(max_entries=64, show_spinner=False)
+def preview_png(pdf_bytes, page_index):
+    return render_pdf_page(pdf_bytes, page_index, zoom=1.6)
 
 
 # --------------------------------------------------
-# PDF conversion
+# Header
 # --------------------------------------------------
+# The logo is a Cornell sheet in miniature (static/brand/logo.svg); served as a
+# file because st.html strips inline SVG.
+LOGO = '<img class="brand-mark" src="app/static/brand/logo.svg" alt="" width="34" height="41">'
 
-def build_pdf(input_bytes, template, pages_per_sheet=1, crop_whitespace=False):
-    src = fitz.open(stream=input_bytes, filetype="pdf")
-    out = fitz.open()
-    try:
-        if src.page_count == 0:
-            raise ValueError("The uploaded document contains no pages.")
-        if pages_per_sheet not in (1, 2):
-            raise ValueError("Choose 1 or 2 pages per sheet.")
-        total = (src.page_count + pages_per_sheet - 1) // pages_per_sheet
-        for i in range(total):
-            first = i * pages_per_sheet
-            second = (
-                first + 1
-                if pages_per_sheet == 2 and first + 1 < src.page_count
-                else None
-            )
-            make_page(
-                out, src, first, second, i + 1, total, template,
-                crop_whitespace=crop_whitespace,
-            )
-        return out.tobytes(garbage=4, deflate=True)
-    finally:
-        out.close()
-        src.close()
-
-
-def render_pdf_page(pdf_bytes, page_number, zoom=1.35):
-    """Render a PDF page to PNG for an in-app preview."""
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-        if document.page_count == 0:
-            raise ValueError("The generated PDF contains no pages.")
-        page_number = max(0, min(page_number, document.page_count - 1))
-        pixmap = document[page_number].get_pixmap(
-            matrix=fitz.Matrix(zoom, zoom),
-            alpha=False,
-        )
-        return pixmap.tobytes("png")
-
-
-# --------------------------------------------------
-# Bilingual web interface with live preview
-# --------------------------------------------------
-st.markdown(
-    f'<div class="section-title">{lang["upload_title"]}</div>',
-    unsafe_allow_html=True,
-)
-st.write(lang["upload_help"])
-
-uploaded_file = st.file_uploader(
-    label=lang["drop_title"],
-    type=["pdf", "png", "jpg", "jpeg", "txt", "docx", "doc", "pptx", "ppt"],
-    accept_multiple_files=False,
-    help=lang["upload_help"],
-)
-st.caption("📄 " + lang["drop_description"] + " · " + lang["drop_hint"])
-
-st.markdown(
-    f'<div class="section-title">{lang["template_title"]}</div>',
-    unsafe_allow_html=True,
-)
-st.write(lang["template_help"])
-
-template_labels = {
-    "Template 1": lang["template1"],
-    "Template 2": lang["template2"],
-}
-template = st.radio(
-    lang["template_title"],
-    ["Template 1", "Template 2"],
-    format_func=lambda value: template_labels[value],
-    horizontal=False,
-    label_visibility="collapsed",
-    key="template_choice",
-)
-
-default_pages = 2 if (
-    uploaded_file is not None
-    and uploaded_file.name.lower().endswith((".ppt", ".pptx"))
-) else 1
-pages_per_sheet = st.radio(
-    "عدد الصفحات في الورقة" if is_arabic else "Source pages per sheet",
-    options=[1, 2],
-    format_func=lambda value: (
-        ("صفحة واحدة — محتوى أكبر" if is_arabic else "One page — larger content")
-        if value == 1
-        else ("صفحتان — توفير الورق" if is_arabic else "Two pages — save paper")
-    ),
-    horizontal=True,
-    index=0 if default_pages == 1 else 1,
-    key="pages_per_sheet_choice",
-)
-
-if uploaded_file is None:
-    st.info(
-        "ارفع ملفًا لعرض المعاينة هنا تلقائيًا."
-        if is_arabic
-        else "Upload a file to see its preview here automatically."
+title_col, lang_col = st.columns([4, 1.4], vertical_alignment="center")
+with title_col:
+    st.html(f'<div class="brand">{LOGO}<span class="brand-name">{T["app_title"]}</span></div>')
+with lang_col:
+    st.segmented_control(
+        T["language"], options=["ar", "en"], default=lang, key="lang_select",
+        format_func=lambda code: "العربية" if code == "ar" else "English",
+        label_visibility="collapsed",
     )
-    st.session_state.pop("cornell_pdf", None)
-    st.session_state.pop("cornell_filename", None)
-    st.session_state.pop("cornell_signature", None)
+
+# First visit: show the product itself, a real page of the notes PDF, with
+# what each part of the page is for. Once a file is loaded the hero steps
+# aside so the working steps sit near the top.
+if st.session_state.get("upload") is None and not st.session_state.get("_test_document"):
+    parts = "".join(
+        f'<li><span class="swatch swatch-{key}"></span>'
+        f'<p><b>{name}</b> <span class="part-text">{text}</span></p></li>'
+        for key, name, text in T["page_parts"])
+    st.html(f"""
+<section class="hero">
+  <div class="hero-copy">
+    <h1>{T["hero_title"]}</h1>
+    <p class="hero-text">{T["hero_text"]}</p>
+    <h2>{T["page_parts_title"]}</h2>
+    <ul class="parts">{parts}</ul>
+    <p class="hero-after">{T["hero_after"]}</p>
+  </div>
+  <figure class="hero-sheet">
+    <img src="app/static/previews/ai_cornell.png" alt="{T["hero_image_alt"]}" loading="eager">
+  </figure>
+</section>
+""")
 else:
-    st.success(
-        f'{lang["ready"]}: {uploaded_file.name} '
-        f'({uploaded_file.size / 1024:.1f} KB)'
-    )
-    file_bytes = uploaded_file.getvalue()
-    crop_whitespace = uploaded_file.name.lower().endswith((".docx", ".doc"))
-    signature = hashlib.sha256(
-        uploaded_file.name.encode("utf-8", errors="replace")
-        + file_bytes
-        + template.encode("utf-8")
-        + str(pages_per_sheet).encode("ascii")
-        + str(crop_whitespace).encode("ascii")
-    ).hexdigest()
+    st.html(f'<p class="tagline">{T["tagline"]}</p>')
 
-    if st.session_state.get("cornell_signature") != signature:
+
+# --------------------------------------------------
+# Step 1: upload
+# --------------------------------------------------
+st.html(f'<div class="step">{T["step_upload"]}</div>')
+uploaded = st.file_uploader(T["upload_label"], type=UPLOAD_TYPES, help=T["upload_help"],
+                            label_visibility="collapsed", key="upload")
+st.caption(T["upload_help"])
+
+doc = None
+if uploaded is not None:
+    data = uploaded.getvalue()
+    sig = hashlib.sha256(uploaded.name.encode("utf-8", "replace") + b"\0" + data).hexdigest()
+    doc = st.session_state.get("doc")
+    if not doc or doc["sig"] != sig:
         try:
-            with st.spinner(
-                "جارٍ إنشاء المعاينة..." if is_arabic else "Generating preview..."
-            ):
-                source_pdf = convert_to_pdf(uploaded_file)
-                output_pdf = build_pdf(
-                    source_pdf,
-                    template,
-                    pages_per_sheet=pages_per_sheet,
-                    crop_whitespace=crop_whitespace,
-                )
-            base_name = uploaded_file.name.rsplit(".", 1)[0]
-            st.session_state["cornell_pdf"] = output_pdf
-            st.session_state["cornell_filename"] = f"{base_name}_cornell.pdf"
-            st.session_state["cornell_signature"] = signature
-            st.session_state["cornell_preview_page"] = 1
-        except Exception as exc:
-            st.session_state.pop("cornell_pdf", None)
-            st.session_state.pop("cornell_filename", None)
-            st.session_state.pop("cornell_signature", None)
-            st.error(f'{lang["error"]}: {exc}')
-
-    if (
-        st.session_state.get("cornell_signature") == signature
-        and "cornell_pdf" in st.session_state
-    ):
-        output_pdf = st.session_state["cornell_pdf"]
-        with fitz.open(stream=output_pdf, filetype="pdf") as output_doc:
-            output_page_count = output_doc.page_count
-
-        st.markdown(
-            f'<div class="section-title">{"المعاينة المباشرة" if is_arabic else "Live preview"}</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"عدد الصفحات الناتجة: {output_page_count}"
-            if is_arabic
-            else f"Output pages: {output_page_count}"
-        )
-        selected_preview_page = st.slider(
-            "صفحة المعاينة" if is_arabic else "Preview page",
-            min_value=1,
-            max_value=max(1, output_page_count),
-            value=min(
-                st.session_state.get("cornell_preview_page", 1),
-                max(1, output_page_count),
-            ),
-            key="cornell_preview_slider",
-        )
-        st.session_state["cornell_preview_page"] = selected_preview_page
-        st.image(
-            render_pdf_page(output_pdf, selected_preview_page - 1),
-            caption=(
-                f"صفحة {selected_preview_page} من {output_page_count}"
-                if is_arabic
-                else f"Page {selected_preview_page} of {output_page_count}"
-            ),
-            use_container_width=True,
-        )
-        st.download_button(
-            label=f"⬇️ {lang['download_button']}",
-            data=output_pdf,
-            file_name=st.session_state["cornell_filename"],
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True,
-            key="download_cornell_pdf",
-        )
+            with st.spinner(T["converting"]):
+                pdf_bytes, pages = load_document(uploaded)
+            doc = {"sig": sig, "name": uploaded.name, "pdf": pdf_bytes, "pages": pages,
+                   "size": len(data)}
+            st.session_state.doc = doc
+            forget_other_files(sig)
+        except DocumentError as exc:
+            st.session_state.pop("doc", None)
+            doc = None
+            show_error(exc.kind)
+        except Exception as exc:  # noqa: BLE001 - shown as a reference code
+            st.session_state.pop("doc", None)
+            doc = None
+            show_unexpected(exc, "Upload")
+    if doc:
+        # File names and sizes are isolated so they keep their own direction
+        # inside Arabic text (U+2068 first-strong isolate ... U+2069 pop).
+        st.success(T["file_info"].format(name=isolate(doc["name"]), pages=doc["pages"],
+                                         size=isolate(human_size(doc["size"]))), icon="📄")
+else:
+    # Tests cannot drive st.file_uploader, so tests/test_app_flow.py places a
+    # document in session state directly (visitors cannot set session state).
+    doc = st.session_state.get("doc") if st.session_state.get("_test_document") else None
+    if doc is None:
+        st.session_state.pop("doc", None)
 
 
-st.divider()
-st.markdown(
-    f'<div class="footer">{lang["footer"]}</div>',
-    unsafe_allow_html=True,
-)
+# --------------------------------------------------
+# Access code (optional, set APP_ACCESS_CODE)
+# --------------------------------------------------
+def ai_allowed(place):
+    if not usage_limits.access_code_required() or st.session_state.get("access_ok"):
+        return True
+    st.html(f'<div class="step">{T["access_title"]}</div>')
+    st.caption(T["access_hint"])
+    with st.form(f"access_form_{place}", border=False):
+        code = st.text_input(T["access_title"], type="password", label_visibility="collapsed")
+        submitted = st.form_submit_button(T["access_button"])
+    if submitted:
+        try:
+            limiter.access_attempt(visitor())
+        except LimitExceeded as exc:
+            show_limit(exc)
+            return False
+        if usage_limits.access_code_ok(code):
+            st.session_state.access_ok = True
+            st.rerun()
+        st.error(T["access_wrong"])
+    return False
+
+
+# --------------------------------------------------
+# Tab: PDF notes
+# --------------------------------------------------
+def run_slide_analysis(pages=None):
+    """Analyze all slides (or just `pages`) and store the notes for this file."""
+    count = len(pages) if pages else doc["pages"]
+    try:
+        limiter.start_ai_job(visitor(), slides=count)
+    except LimitExceeded as exc:
+        show_limit(exc, pages=count)
+        return
+    bar = st.progress(0.0, text=T["analyzing"].format(done=0, total=count))
+    started = time.monotonic()
+
+    def progress(done, total):
+        elapsed = time.monotonic() - started
+        text = (T["analyzing_eta"].format(done=done, total=total,
+                                          eta=human_duration(elapsed / done * (total - done)))
+                if 0 < done < total else T["analyzing"].format(done=done, total=total))
+        bar.progress(done / total, text=text)
+
+    try:
+        notes = ai_assistant.analyze_pages(doc["pdf"], pages=pages, progress=progress)
+    except AIError as exc:
+        limiter.refund_slides(count)
+        bar.empty()
+        show_error(exc.kind)
+        return
+    except Exception as exc:  # noqa: BLE001
+        bar.empty()
+        show_unexpected(exc, "Slide analysis")
+        return
+    logger.info("Analyzed %d slides in %.0fs", count, time.monotonic() - started)
+
+    store = cache("notes")
+    if pages and doc["sig"] in store:
+        by_page = {note["source_page"]: note for note in store[doc["sig"]]}
+        by_page.update({note["source_page"]: note for note in notes})
+        notes = [by_page[number] for number in sorted(by_page)]
+    store[doc["sig"]] = notes
+    pdfs = cache("pdfs")
+    for key in [k for k in pdfs if k[0] == doc["sig"]]:
+        del pdfs[key]
+    st.rerun()
+
+
+def notes_pdf(template_key, per_sheet):
+    key = (doc["sig"], template_key, per_sheet)
+    pdfs = cache("pdfs")
+    if key not in pdfs:
+        with st.spinner(T["building_pdf"]):
+            pdfs[key] = TEMPLATES[template_key].build_pdf(
+                doc["pdf"], cache("notes")[doc["sig"]], pages_per_sheet=per_sheet,
+                lecture_title=doc["name"].rsplit(".", 1)[0],
+            )
+    return pdfs[key]
+
+
+def show_preview(pdf_bytes, file_name):
+    import pymupdf
+
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as output:
+        total = output.page_count
+    st.html(f'<div class="step">{T["preview"]}</div>')
+    page = 1
+    if total > 1:
+        page = st.slider(T["preview_page"], 1, total, 1, key="preview_page",
+                         label_visibility="collapsed")
+        page = min(page, total)
+    st.image(preview_png(pdf_bytes, page - 1),
+             caption=T["page_of"].format(page=page, total=total), width="stretch")
+    st.download_button(f"⬇️ {T['download']}", data=pdf_bytes, file_name=file_name,
+                       mime="application/pdf", type="primary", width="stretch",
+                       key="download_notes")
+
+
+def notes_tab():
+    st.html(f'<div class="step">{T["step_template"]}</div>')
+    keys = list(TEMPLATES)
+    template_key = DEFAULT_TEMPLATE
+    if len(keys) > 1:
+        template_key = st.radio(
+            T["step_template"], keys, horizontal=True, label_visibility="collapsed",
+            format_func=lambda k: TEMPLATES[k].name_ar if rtl else TEMPLATES[k].name_en,
+            key="template_choice",
+        )
+    template = TEMPLATES[template_key]
+    with st.container(border=True):
+        image_col, text_col = st.columns([1, 1.6], vertical_alignment="center")
+        if template.preview_image:
+            image_col.image(str(template.preview_image), width="stretch")
+        text_col.html(
+            f'<div class="template-name">{template.name_ar if rtl else template.name_en}</div>'
+            f'<div class="muted">{template.description_ar if rtl else template.description_en}</div>'
+        )
+        per_sheet = text_col.segmented_control(
+            T["per_sheet"], options=[2, 1], default=2, key="per_sheet",
+            format_func=lambda n: T["per_sheet_1"] if n == 1 else T["per_sheet_2"],
+        ) or 2
+
+    st.html(f'<div class="step">{T["step_create"]}</div>')
+    if doc is None:
+        st.info(T["upload_first"], icon="📄")
+        return
+    if not ai_allowed("notes"):
+        return
+
+    notes = cache("notes").get(doc["sig"])
+    if notes is None:
+        st.caption(T["create_hint"])
+        if st.button(f"✨ {T['create_button']}", type="primary", width="stretch",
+                     key="create_notes"):
+            run_slide_analysis()
+        return
+
+    failed = [n["source_page"] for n in notes if n.get("error")]
+    if failed:
+        st.warning(T["failed_slides"].format(n=len(failed), pages=", ".join(map(str, failed))),
+                   icon="⚠️")
+        if st.button(T["retry_failed"], key="retry_failed"):
+            run_slide_analysis(pages=failed)
+    else:
+        st.success(T["analysis_done"].format(n=len(notes)), icon="✅")
+
+    try:
+        pdf_bytes = notes_pdf(template_key, per_sheet)
+    except Exception as exc:  # noqa: BLE001
+        show_unexpected(exc, "PDF build")
+        return
+    show_preview(pdf_bytes, f"{doc['name'].rsplit('.', 1)[0]}_notes.pdf")
+
+
+# --------------------------------------------------
+# Tab: AI assistant
+# --------------------------------------------------
+def lecture_text():
+    store = cache("lecture_text")
+    if doc["sig"] not in store:
+        store[doc["sig"]] = ai_assistant.extract_pdf_text(doc["pdf"])
+    return store[doc["sig"]]
+
+
+def report_section():
+    st.html(f'<div class="step">{T["report_title"]}</div>')
+    st.caption(T["report_hint"])
+    reports = cache("reports")
+    count_col, button_col = st.columns([1, 1.4], vertical_alignment="bottom")
+    question_count = count_col.selectbox(T["mcq_count"], [5, 10, 15, 20], index=1,
+                                         key="ai_question_count")
+    if button_col.button(f"✨ {T['report_button']}", type="primary", width="stretch",
+                         key="analyze_lecture_button"):
+        try:
+            limiter.start_ai_job(visitor())
+            with st.spinner(T["report_working"]):
+                reports[doc["sig"]] = ai_assistant.analyze_lecture(
+                    doc["pdf"], question_count=question_count)
+        except LimitExceeded as exc:
+            show_limit(exc)
+        except AIError as exc:
+            show_error(exc.kind)
+        except Exception as exc:  # noqa: BLE001
+            show_unexpected(exc, "Lecture report")
+
+    report = reports.get(doc["sig"])
+    if report:
+        with st.container(border=True):
+            st.markdown(plain_markdown(report))
+        st.download_button(f"⬇️ {T['report_download']}", data=report.encode("utf-8"),
+                           file_name=f"{doc['name'].rsplit('.', 1)[0]}_study_report.md",
+                           mime="text/markdown", width="stretch",
+                           key="download_ai_study_notes")
+
+
+def chat_section():
+    st.html(f'<div class="step">{T["chat_title"]}</div>')
+    history = cache("chats").setdefault(doc["sig"], [])
+    for turn in history:
+        with st.chat_message(turn["role"], avatar="🧑‍🎓" if turn["role"] == "user" else "📘"):
+            st.markdown(plain_markdown(turn["content"]))
+
+    if not history:
+        # A chosen suggestion is queued once; the widget is cleared so a later
+        # rerun (e.g. switching language) cannot send it again.
+        def queue_suggestion():
+            st.session_state.pending_question = st.session_state.chat_suggestion
+            st.session_state.chat_suggestion = None
+
+        st.pills(T["chat_title"], T["chat_suggestions"], key="chat_suggestion",
+                 label_visibility="collapsed", on_change=queue_suggestion)
+    question = (st.chat_input(T["chat_placeholder"], key="chat_input",
+                              max_chars=ai_assistant.MAX_QUESTION_CHARS)
+                or st.session_state.pop("pending_question", None))
+    if question:
+        try:
+            limiter.chat_message(visitor())
+            text = lecture_text()
+            with st.chat_message("user", avatar="🧑‍🎓"):
+                st.markdown(plain_markdown(question))
+            with st.chat_message("assistant", avatar="📘"), st.spinner(T["chat_thinking"]):
+                answer = ai_assistant.ask_about_lecture(text, history, question)
+            history += [{"role": "user", "content": question},
+                        {"role": "assistant", "content": answer}]
+            st.rerun()
+        except LimitExceeded as exc:
+            show_limit(exc)
+        except AIError as exc:
+            show_error(exc.kind)
+        except Exception as exc:  # noqa: BLE001
+            show_unexpected(exc, "Lecture chat")
+
+    if history and st.button(T["chat_clear"], key="chat_clear"):
+        history.clear()
+        st.rerun()
+
+
+def assistant_tab():
+    st.caption(T["assistant_intro"])
+    if doc is None:
+        st.info(T["upload_first"], icon="📄")
+        return
+    if not ai_allowed("assistant"):
+        return
+    report_section()
+    st.divider()
+    chat_section()
+
+
+# --------------------------------------------------
+# Tab: support
+# --------------------------------------------------
+def support_tab():
+    st.html(f'<p class="muted">{T["support_intro"]}</p>')
+    categories = T["support_categories"]
+    with st.form("support_form", clear_on_submit=False, border=True):
+        category = st.selectbox(T["support_category"], list(categories),
+                                format_func=categories.get, key="support_category")
+        name_col, email_col = st.columns(2)
+        name = name_col.text_input(T["support_name"], max_chars=support.MAX_NAME_CHARS,
+                                   key="support_name")
+        email = email_col.text_input(T["support_email"], max_chars=254, key="support_email")
+        message = st.text_area(T["support_message"], help=T["support_message_help"],
+                               max_chars=support.MAX_MESSAGE_CHARS, height=170,
+                               key="support_message")
+        submitted = st.form_submit_button(f"✉️ {T['support_send']}", type="primary",
+                                          width="stretch")
+    if not submitted:
+        return
+    try:
+        support.validate(email, message, name)
+        limiter.support_ticket(visitor())
+        context = {"Language": lang}
+        if doc:
+            context["Lecture"] = f"{doc['name']} ({doc['pages']} pages)"
+        ticket = support.send_ticket(category, email, message, name, context)
+    except support.TicketError as exc:
+        st.error(T["support_errors"][exc.kind], icon="⚠️")
+    except LimitExceeded as exc:
+        show_limit(exc)
+    else:
+        st.success(T["support_sent"].format(ticket=ticket), icon="✅")
+
+
+notes_view, assistant_view, support_view = st.tabs(
+    [T["tab_notes"], T["tab_assistant"], T["tab_support"]])
+with notes_view:
+    notes_tab()
+with assistant_view:
+    assistant_tab()
+with support_view:
+    support_tab()
+
+st.html(f'<div class="footer">{T["privacy"]}<br>{T["footer_help"]}</div>')
