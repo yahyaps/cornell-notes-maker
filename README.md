@@ -1,20 +1,26 @@
 # Cornell Notes Maker
 
 A bilingual (Arabic/English) Streamlit app that turns university lecture files into
-study notes: printable Cornell sheets, AI-explained lecture notes, and an AI lecture
-assistant powered by Google Gemini.
+AI-explained Cornell study notes (A4 PDF) and offers an AI lecture assistant powered
+by Google Gemini.
 
 ## Features
 
-- **Template 1 – Cornell notes:** course details, Key Points column, the original
-  lecture pages, and a personal notes area. One or two source pages per sheet.
-- **Template 2 – AI lecture notes:** Gemini explains every slide in Arabic and lists
-  its key points; the PDF places the explanation beside the original slide (A4 portrait).
+- **AI Cornell Notes (A4 portrait):** Gemini explains every slide in Arabic. Each slide
+  becomes a study unit: explanation and key points on the left, the original slide
+  (kept as vector content) on the right with a review question, and a summary below.
+  One or two slides per sheet; long explanations continue on the next page, never cut.
 - **AI Lecture Assistant:** Arabic explanation, high-yield points, and practice MCQs
   for the whole lecture, downloadable as Markdown.
 - Live preview before download.
 - Uploads: PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, JPEG, TXT (Office files are converted
   with LibreOffice; the original file is never modified).
+
+## Adding a template
+
+Create a module in `note_templates/` exposing
+`build_pdf(source_pdf_bytes, page_notes, pages_per_sheet=1, lecture_title="")` and
+register it in `note_templates/__init__.py`. The app lists every registered template.
 
 ## Project layout
 
@@ -22,15 +28,15 @@ assistant powered by Google Gemini.
 |---|---|
 | `app.py` | Streamlit interface |
 | `document_io.py` | Upload → PDF conversion, preview rendering |
-| `note_templates/cornell.py` | Template 1 PDF layout |
-| `educational_pdf.py` | Template 2 PDF layout |
+| `note_templates/` | PDF templates; `__init__.py` registers them, `ai_cornell.py` is the current one |
 | `ai_assistant.py` | Gemini calls: per-slide analysis and the lecture assistant |
+| `assets/fonts/` | IBM Plex Sans Arabic (SIL OFL), one font for Arabic and English text |
 | `tests/` | Automated tests (see below) |
 
 ## Setup
 
 Requires Python 3.12+ and, for Word/PowerPoint uploads, LibreOffice
-(`libreoffice` on the PATH). Template 2 needs the Noto Sans Arabic and DejaVu Sans fonts.
+(`libreoffice` on the PATH).
 
     python -m venv .venv
     .venv/bin/pip install -r requirements.txt
@@ -55,9 +61,9 @@ Run:
 
 The suite runs offline: Gemini is replaced by a fake client.
 
-- `test_cornell_template.py` compares Template 1 against approved images in
-  `tests/golden/`. After an **intentional** design change, regenerate them with
-  `UPDATE_GOLDEN=1` and review the new images before committing.
+- `test_ai_cornell_template.py` checks the layout rules, including that long
+  explanations are never clipped or dropped. After changing the design, run
+  `python tests/render_samples.py` and review the PNGs in `tests/output/`.
 - Tests marked `expectedFailure` document known bugs that are scheduled to be fixed.
 - `tests/fixtures/sample_lecture.pdf` is synthetic (rebuild with
   `python tests/make_fixtures.py`). Real lectures for manual checks go in

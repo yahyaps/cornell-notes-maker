@@ -3,7 +3,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 
 from document_io import convert_to_pdf, render_pdf_page
-from note_templates.cornell import build_pdf
+from note_templates import TEMPLATES
 
 
 # --------------------------------------------------
@@ -31,11 +31,8 @@ TRANSLATIONS = {
         "drop_description": "Drag your lecture file into the upload area below",
         "drop_hint": "PDF, Word, PowerPoint, images, or TXT • Original file unchanged",
         "browse": "Click Browse files to choose a file",
-        "template_title": "2. Choose your template",
-        "template_help": "Choose the Cornell layout that suits your study style.",
-        "template1": "Template 1 — Course Details, Key Points, Lecture Content & Summary",
-        "template2": "Template 2 — AI Explanation + Original Slides",
-        "hide_notes": "Hide the personal Notes area",
+        "template_title": "2. Template",
+        "template_help": "Your lecture becomes a printable A4 study guide.",
         "create_title": "3. Create your notes",
         "create_help": "Your document will contain two vertically stacked elements per page, without writing lines behind them.",
         "create_button": "Create Cornell PDF",
@@ -60,11 +57,8 @@ TRANSLATIONS = {
         "drop_description": "اسحب ملف المحاضرة وأفلته داخل مساحة رفع الملف أدناه",
         "drop_hint": "ملفات PDF وWord وPowerPoint والصور وTXT • لن يتم تعديل الملف الأصلي",
         "browse": "أو اضغط على زر اختيار الملفات لتحديد المحاضرة",
-        "template_title": "٢. اختر قالب كورنيل",
-        "template_help": "اختر تصميم الملاحظات المناسب لطريقة دراستك.",
-        "template1": "القالب الأول — بيانات المقرر والنقاط الرئيسية ومحتوى المحاضرة والملخص",
-        "template2": "القالب الثاني — شرح بالذكاء الاصطناعي مع الشرائح الأصلية",
-        "hide_notes": "إخفاء مساحة الملاحظات الشخصية فقط",
+        "template_title": "٢. القالب",
+        "template_help": "تتحول محاضرتك إلى دليل مذاكرة جاهز للطباعة بحجم A4.",
         "create_title": "٣. أنشئ ملف الملاحظات",
         "create_help": "ستحتوي كل صفحة على محتوى مرتب عموديًا، دون خطوط كتابة خلف الشرائح.",
         "create_button": "إنشاء ملف كورنيل PDF",
@@ -218,261 +212,160 @@ st.markdown(
 )
 st.write(lang["template_help"])
 
-template_labels = {
-    "Template 1": lang["template1"],
-    "Template 2": lang["template2"],
-}
-template = st.radio(
-    lang["template_title"],
-    ["Template 1", "Template 2"],
-    format_func=lambda value: template_labels[value],
-    horizontal=False,
-    label_visibility="collapsed",
-    key="template_choice",
+template_keys = list(TEMPLATES)
+if len(template_keys) > 1:
+    template_key = st.radio(
+        lang["template_title"],
+        template_keys,
+        format_func=lambda key: (
+            TEMPLATES[key].name_ar if is_arabic else TEMPLATES[key].name_en
+        ),
+        label_visibility="collapsed",
+        key="template_choice",
+    )
+else:
+    template_key = template_keys[0]
+template = TEMPLATES[template_key]
+st.markdown(
+    f"**{template.name_ar if is_arabic else template.name_en}** — "
+    f"{template.description_ar if is_arabic else template.description_en}"
 )
 
-hide_notes = st.checkbox(
-    lang["hide_notes"],
-    value=False,
-    key="hide_notes_checkbox",
-)
-
-default_pages = 2 if (
-    uploaded_file is not None
-    and uploaded_file.name.lower().endswith((".ppt", ".pptx"))
-) else 1
 pages_per_sheet = st.radio(
-    "عدد الصفحات في الورقة" if is_arabic else "Source pages per sheet",
+    "عدد الشرائح في الورقة" if is_arabic else "Slides per sheet",
     options=[1, 2],
     format_func=lambda value: (
-        ("صفحة واحدة — محتوى أكبر" if is_arabic else "One page — larger content")
+        ("شريحة واحدة — خط أكبر" if is_arabic else "One slide — larger text")
         if value == 1
-        else ("صفحتان — توفير الورق" if is_arabic else "Two pages — save paper")
+        else ("شريحتان — توفير الورق" if is_arabic else "Two slides — save paper")
     ),
     horizontal=True,
-    index=0 if default_pages == 1 else 1,
+    index=1,
     key="pages_per_sheet_choice",
 )
 
-if template == "Template 1":
+st.markdown(
+    f'<div class="section-title">{"إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي" if is_arabic else "Create AI Lecture Notes"}</div>',
+    unsafe_allow_html=True,
+)
+st.write(
+    "سيحلّل Gemini كل شريحة عند الضغط على الزر فقط، ثم ينشئ ملف PDF جديدًا."
+    if is_arabic
+    else "Gemini will analyze each slide only after you press the button, then create a separate PDF."
+)
+
+if uploaded_file is not None:
+    st.success(
+        f'{lang["ready"]}: {uploaded_file.name} '
+        f'({uploaded_file.size / 1024:.1f} KB)'
+    )
+
+ai_current_signature = None
+if uploaded_file is not None:
+    ai_current_signature = hashlib.sha256(
+        uploaded_file.name.encode("utf-8", errors="replace")
+        + uploaded_file.getvalue()
+        + template_key.encode("utf-8")
+        + str(pages_per_sheet).encode("ascii")
+    ).hexdigest()
+
+if st.button(
+    "✨ إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي"
+    if is_arabic
+    else "✨ Create AI Lecture Notes",
+    type="primary",
+    use_container_width=True,
+    key="create_ai_lecture_notes_button",
+):
     if uploaded_file is None:
-        st.info(
-            "ارفع ملفًا لعرض المعاينة هنا تلقائيًا."
-            if is_arabic
-            else "Upload a file to see its preview here automatically."
-        )
-        st.session_state.pop("cornell_pdf", None)
-        st.session_state.pop("cornell_filename", None)
-        st.session_state.pop("cornell_signature", None)
+        st.warning(lang["select_pdf"])
     else:
-        st.success(
-            f'{lang["ready"]}: {uploaded_file.name} '
-            f'({uploaded_file.size / 1024:.1f} KB)'
-        )
-        file_bytes = uploaded_file.getvalue()
-        crop_whitespace = uploaded_file.name.lower().endswith((".docx", ".doc"))
-        signature = hashlib.sha256(
-            uploaded_file.name.encode("utf-8", errors="replace")
-            + file_bytes
-            + template.encode("utf-8")
-            + str(pages_per_sheet).encode("ascii")
-            + str(crop_whitespace).encode("ascii")
-            + str(hide_notes).encode("ascii")
-        ).hexdigest()
+        try:
+            from ai_assistant import analyze_pages
 
-        if st.session_state.get("cornell_signature") != signature:
-            try:
-                with st.spinner(
-                    "جارٍ إنشاء المعاينة..." if is_arabic else "Generating preview..."
-                ):
-                    source_pdf = convert_to_pdf(uploaded_file)
-                    output_pdf = build_pdf(
-                        source_pdf,
-                        template,
-                        pages_per_sheet=pages_per_sheet,
-                        crop_whitespace=crop_whitespace,
-                        hide_notes=hide_notes,
-                    )
-                base_name = uploaded_file.name.rsplit(".", 1)[0]
-                st.session_state["cornell_pdf"] = output_pdf
-                st.session_state["cornell_filename"] = f"{base_name}_cornell.pdf"
-                st.session_state["cornell_signature"] = signature
-                st.session_state["cornell_preview_page"] = 1
-            except Exception as exc:
-                st.session_state.pop("cornell_pdf", None)
-                st.session_state.pop("cornell_filename", None)
-                st.session_state.pop("cornell_signature", None)
-                st.error(f'{lang["error"]}: {exc}')
-
-        if (
-            st.session_state.get("cornell_signature") == signature
-            and "cornell_pdf" in st.session_state
-        ):
-            output_pdf = st.session_state["cornell_pdf"]
-            with fitz.open(stream=output_pdf, filetype="pdf") as output_doc:
-                output_page_count = output_doc.page_count
-
-            st.markdown(
-                f'<div class="section-title">{"المعاينة المباشرة" if is_arabic else "Live preview"}</div>',
-                unsafe_allow_html=True,
-            )
-            st.caption(
-                f"عدد الصفحات الناتجة: {output_page_count}"
+            with st.spinner(
+                "جارٍ تحليل الشرائح وإنشاء ملف الملاحظات..."
                 if is_arabic
-                else f"Output pages: {output_page_count}"
+                else "Analyzing slides and creating your notes PDF..."
+            ):
+                source_pdf = convert_to_pdf(uploaded_file)
+                page_notes = analyze_pages(source_pdf)
+                base_name = uploaded_file.name.rsplit(".", 1)[0]
+                ai_pdf = template.build_pdf(
+                    source_pdf,
+                    page_notes,
+                    pages_per_sheet=pages_per_sheet,
+                    lecture_title=base_name,
+                )
+
+            st.session_state["ai_notes_pdf"] = ai_pdf
+            st.session_state["ai_notes_filename"] = f"{base_name}_ai_lecture_notes.pdf"
+            st.session_state["ai_notes_source_name"] = uploaded_file.name
+            st.session_state["ai_notes_signature"] = ai_current_signature
+            st.session_state["ai_notes_preview_page"] = 1
+            st.success(
+                "تم إنشاء ملاحظات المحاضرة بنجاح."
+                if is_arabic
+                else "AI lecture notes created successfully."
             )
-            selected_preview_page = st.slider(
-                "صفحة المعاينة" if is_arabic else "Preview page",
-                min_value=1,
-                max_value=max(1, output_page_count),
-                value=min(
-                    st.session_state.get("cornell_preview_page", 1),
-                    max(1, output_page_count),
-                ),
-                key="cornell_preview_slider",
-            )
-            st.session_state["cornell_preview_page"] = selected_preview_page
-            st.image(
-                render_pdf_page(output_pdf, selected_preview_page - 1),
-                caption=(
-                    f"صفحة {selected_preview_page} من {output_page_count}"
-                    if is_arabic
-                    else f"Page {selected_preview_page} of {output_page_count}"
-                ),
-                use_container_width=True,
-            )
-            st.download_button(
-                label=f"⬇️ {lang['download_button']}",
-                data=output_pdf,
-                file_name=st.session_state["cornell_filename"],
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-                key="download_cornell_pdf",
+        except Exception as exc:
+            st.error(
+                f"تعذّر إنشاء ملاحظات الذكاء الاصطناعي: {exc}"
+                if is_arabic
+                else f"Could not create AI lecture notes: {exc}"
             )
 
-else:
+if (
+    st.session_state.get("ai_notes_pdf")
+    and ai_current_signature
+    and st.session_state.get("ai_notes_signature") == ai_current_signature
+):
+    ai_pdf = st.session_state["ai_notes_pdf"]
+    with fitz.open(stream=ai_pdf, filetype="pdf") as ai_doc:
+        ai_page_count = ai_doc.page_count
+
     st.markdown(
-        f'<div class="section-title">{"إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي" if is_arabic else "Create AI Lecture Notes"}</div>',
+        f'<div class="section-title">{"معاينة ملاحظات الذكاء الاصطناعي" if is_arabic else "AI Notes Preview"}</div>',
         unsafe_allow_html=True,
     )
-    st.write(
-        "سيحلّل Gemini كل شريحة عند الضغط على الزر فقط، ثم ينشئ ملف PDF جديدًا."
+    st.caption(
+        f"عدد الصفحات: {ai_page_count}"
         if is_arabic
-        else "Gemini will analyze each slide only after you press the button, then create a separate PDF."
+        else f"Output pages: {ai_page_count}"
     )
-
-    if uploaded_file is not None:
-        st.success(
-            f'{lang["ready"]}: {uploaded_file.name} '
-            f'({uploaded_file.size / 1024:.1f} KB)'
-        )
-
-    ai_current_signature = None
-    if uploaded_file is not None:
-        ai_current_signature = hashlib.sha256(
-            uploaded_file.name.encode("utf-8", errors="replace")
-            + uploaded_file.getvalue()
-            + str(pages_per_sheet).encode("ascii")
-        ).hexdigest()
-
-    if st.button(
-        "✨ إنشاء ملاحظات المحاضرة بالذكاء الاصطناعي"
+    ai_preview_page = st.slider(
+        "صفحة المعاينة" if is_arabic else "Preview page",
+        min_value=1,
+        max_value=max(1, ai_page_count),
+        value=min(
+            st.session_state.get("ai_notes_preview_page", 1),
+            max(1, ai_page_count),
+        ),
+        key="ai_notes_preview_slider",
+    )
+    st.session_state["ai_notes_preview_page"] = ai_preview_page
+    st.image(
+        render_pdf_page(ai_pdf, ai_preview_page - 1),
+        caption=(
+            f"صفحة {ai_preview_page} من {ai_page_count}"
+            if is_arabic
+            else f"Page {ai_preview_page} of {ai_page_count}"
+        ),
+        use_container_width=True,
+    )
+    st.download_button(
+        label="⬇️ تنزيل ملاحظات المحاضرة"
         if is_arabic
-        else "✨ Create AI Lecture Notes",
+        else "⬇️ Download AI Lecture Notes",
+        data=ai_pdf,
+        file_name=st.session_state.get(
+            "ai_notes_filename", "ai_lecture_notes.pdf"
+        ),
+        mime="application/pdf",
         type="primary",
         use_container_width=True,
-        key="create_ai_lecture_notes_button",
-    ):
-        if uploaded_file is None:
-            st.warning(lang["select_pdf"])
-        else:
-            try:
-                from ai_assistant import analyze_pages
-                from educational_pdf import make_ai_lecture_notes_pdf
-
-                with st.spinner(
-                    "جارٍ تحليل الشرائح وإنشاء ملف الملاحظات..."
-                    if is_arabic
-                    else "Analyzing slides and creating your notes PDF..."
-                ):
-                    source_pdf = convert_to_pdf(uploaded_file)
-                    page_notes = analyze_pages(source_pdf)
-                    ai_pdf = make_ai_lecture_notes_pdf(
-                        source_pdf,
-                        page_notes,
-                        pages_per_sheet=pages_per_sheet,
-                    )
-
-                base_name = uploaded_file.name.rsplit(".", 1)[0]
-                st.session_state["ai_notes_pdf"] = ai_pdf
-                st.session_state["ai_notes_filename"] = f"{base_name}_ai_lecture_notes.pdf"
-                st.session_state["ai_notes_source_name"] = uploaded_file.name
-                st.session_state["ai_notes_signature"] = ai_current_signature
-                st.session_state["ai_notes_preview_page"] = 1
-                st.success(
-                    "تم إنشاء ملاحظات المحاضرة بنجاح."
-                    if is_arabic
-                    else "AI lecture notes created successfully."
-                )
-            except Exception as exc:
-                st.error(
-                    f"تعذّر إنشاء ملاحظات الذكاء الاصطناعي: {exc}"
-                    if is_arabic
-                    else f"Could not create AI lecture notes: {exc}"
-                )
-
-    if (
-        st.session_state.get("ai_notes_pdf")
-        and ai_current_signature
-        and st.session_state.get("ai_notes_signature") == ai_current_signature
-    ):
-        ai_pdf = st.session_state["ai_notes_pdf"]
-        with fitz.open(stream=ai_pdf, filetype="pdf") as ai_doc:
-            ai_page_count = ai_doc.page_count
-
-        st.markdown(
-            f'<div class="section-title">{"معاينة ملاحظات الذكاء الاصطناعي" if is_arabic else "AI Notes Preview"}</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"عدد الصفحات: {ai_page_count}"
-            if is_arabic
-            else f"Output pages: {ai_page_count}"
-        )
-        ai_preview_page = st.slider(
-            "صفحة المعاينة" if is_arabic else "Preview page",
-            min_value=1,
-            max_value=max(1, ai_page_count),
-            value=min(
-                st.session_state.get("ai_notes_preview_page", 1),
-                max(1, ai_page_count),
-            ),
-            key="ai_notes_preview_slider",
-        )
-        st.session_state["ai_notes_preview_page"] = ai_preview_page
-        st.image(
-            render_pdf_page(ai_pdf, ai_preview_page - 1),
-            caption=(
-                f"صفحة {ai_preview_page} من {ai_page_count}"
-                if is_arabic
-                else f"Page {ai_preview_page} of {ai_page_count}"
-            ),
-            use_container_width=True,
-        )
-        st.download_button(
-            label="⬇️ تنزيل ملاحظات المحاضرة"
-            if is_arabic
-            else "⬇️ Download AI Lecture Notes",
-            data=ai_pdf,
-            file_name=st.session_state.get(
-                "ai_notes_filename", "ai_lecture_notes.pdf"
-            ),
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True,
-            key="download_ai_notes_pdf",
-        )
+        key="download_ai_notes_pdf",
+    )
 
 
 st.divider()

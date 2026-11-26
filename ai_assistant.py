@@ -7,6 +7,25 @@ from google import genai
 MODEL_NAME = "gemini-3.8-flash"
 MAX_INPUT_CHARS = 60000
 
+# Structured output: Gemini must answer each slide with this JSON shape.
+SLIDE_NOTES_CONFIG = genai.types.GenerateContentConfig(
+    response_mime_type="application/json",
+    response_schema={
+        "type": "OBJECT",
+        "properties": {
+            "title": {"type": "STRING"},
+            "explanation_ar": {"type": "STRING"},
+            "key_points": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "review_question_ar": {"type": "STRING"},
+            "summary_ar": {"type": "STRING"},
+        },
+        "required": [
+            "title", "explanation_ar", "key_points",
+            "review_question_ar", "summary_ar",
+        ],
+    },
+)
+
 
 def get_gemini_client():
     """Create a Gemini client without hardcoding API credentials."""
@@ -156,12 +175,20 @@ Return valid JSON only, using exactly these keys:
   "explanation_ar": "clear Arabic explanation",
   "key_points": [
     "important point supported by this slide"
-  ]
+  ],
+  "review_question_ar": "one Arabic self-test question about this slide",
+  "summary_ar": "one Arabic sentence summarizing this slide"
 }}
 
 Rules:
 - Provide 2 to 5 key points when the slide supports them.
-- Keep the explanation concise enough to fit a side panel.
+- Write key points in Arabic, keeping technical terms in English.
+- Keep the explanation concise enough to fit a side panel
+  (about 60 to 150 words).
+- Put each English term in parentheses right after its Arabic
+  meaning, e.g. "الموافقة المستنيرة (Informed Consent)".
+- The review question must be answerable from this slide alone.
+- For a title, agenda, or reference slide, keep every field brief.
 - Do not predict exact exam questions.
 - Do not include Markdown fences or any text outside JSON.
 
@@ -178,6 +205,7 @@ Extracted slide text:
                         mime_type="image/png",
                     ),
                 ],
+                config=SLIDE_NOTES_CONFIG,
             )
 
             raw = (response.text or "").strip()
@@ -203,269 +231,9 @@ Extracted slide text:
                     str(point)
                     for point in data.get("key_points", [])
                 ],
+                "review_question_ar": str(data.get("review_question_ar") or ""),
+                "summary_ar": str(data.get("summary_ar") or ""),
                 "_image_bytes": image_bytes,
             })
 
     return results
-
-
-def generate_study_extras(pdf_bytes, question_count=10):
-    """Generate structured diagrams and MCQs from the full lecture."""
-    import json
-
-    if not isinstance(question_count, int) or question_count < 1:
-        raise ValueError("question_count must be a positive integer.")
-
-    lecture_text = extract_pdf_text(pdf_bytes)
-
-    client = get_gemini_client()
-
-    prompt = f"""
-You are an academic learning-design assistant.
-
-Analyze the lecture and decide which visual aids, if any, would
-meaningfully improve student understanding and recall.
-
-Use ONLY information supported by the source lecture.
-Never invent facts, relationships, values, or medical knowledge.
-
-Return valid JSON only with exactly these keys:
-
-{{
-  "visual_decisions": [
-    {{
-      "visual_id": "unique-id-1",
-      "topic": "English topic or slide range",
-      "visual_needed": true,
-      "visual_type": "concept_map | flowchart | comparison_table | mechanism_diagram | timeline | none",
-      "reason": "Brief explanation in English",
-      "source_evidence": ["Relevant concepts explicitly supported by the lecture"]
-    }}
-  ],
-  "diagrams": [
-    {{
-      "visual_id": "unique-id-1",
-      "title": "English title",
-      "nodes": ["English concept 1", "English concept 2"],
-      "arrows": [
-        {{"from": "English concept 1", "to": "English concept 2",
-          "label": "short, clear relationship"}}
-      ]
-    }}
-  ],
-  "mcqs": [
-    {{
-      "question": "Question in English",
-      "options": {{
-        "A": "Option A",
-        "B": "Option B",
-        "C": "Option C",
-        "D": "Option D"
-      }},
-      "correct_answer": "A",
-      "explanation_ar": "تفسير الإجابة باللغة العربية مستند إلى المصدر"
-    }}
-  ],
-  "source_limitations": ["Missing or unclear source information"]
-}}
-
-Visual selection rules:
-- Evaluate the lecture content before choosing any visual.
-- A visual is optional. Zero visuals is a valid result.
-- Use a visual only when it clarifies relationships, sequences,
-  comparisons, mechanisms, or complex classifications.
-- Do not create a visual merely to decorate a title slide,
-  a simple definition, a reference slide, or already-clear content.
-- Choose the most suitable visual type for the source content.
-- Use comparison_table when comparing items across shared criteria.
-- Use flowchart for ordered steps or processes.
-- Use mechanism_diagram for supported causal or mechanistic links.
-- Use concept_map for meaningful relationships among concepts.
-- Do not create tables or diagrams when the source lacks enough
-  information to populate them accurately.
-- Create at most 3 visuals for the entire lecture.
-- Give every visual decision a unique, stable visual_id, such as
-  "visual-1" or "visual-2".
-- Copy the exact same visual_id into the corresponding diagram object.
-- Never reuse a visual_id for different visuals.
-- A diagram must match its approved decision using visual_id,
-  not by matching the topic and title text.
-- Do not include a diagram unless its matching decision has
-  visual_needed=true and a supported diagram visual_type.
-- Only include a diagram in "diagrams" when its corresponding
-  decision has visual_needed=true and visual_type is a diagram type.
-- Do not represent a comparison table as a node-and-arrow diagram.
-  If a table is needed, record that decision; do not fabricate it
-  using the diagram schema.
-- Keep relationship labels concise to reduce visual clutter.
-- Diagram titles, nodes, and relationship labels must be in English.
-- Every relationship must be explicitly supported by the source.
-- If the source does not support a relationship, omit it.
-
-MCQ rules:
-- Create exactly {question_count} MCQs only if the source supports them.
-- Each question must have exactly four options: A, B, C, and D.
-- Each question must have one best answer supported by the source.
-- Explain every correct answer in Arabic using the source content.
-- If the source cannot support {question_count} valid questions,
-  return fewer questions and explain this limitation in source_limitations.
-
-Source limitation rules:
-- Mention missing, unclear, or incomplete source content.
-- Do not infer details from references or tables not included in the source.
-- Do not use Markdown fences or text outside the JSON object.
-
-SOURCE LECTURE:
-{lecture_text}
-"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-    )
-
-    raw = (response.text or "").strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        if raw.endswith("```"):
-            raw = raw[:-3].strip()
-
-    if not raw:
-        raise RuntimeError("Gemini returned an empty response.")
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Gemini returned invalid JSON: {raw[:300]}"
-        ) from exc
-
-    diagrams = data.get("diagrams", [])
-    mcqs = data.get("mcqs", [])
-    visual_decisions = data.get("visual_decisions", [])
-    source_limitations = data.get("source_limitations", [])
-
-    if (
-        not isinstance(diagrams, list)
-        or not isinstance(mcqs, list)
-        or not isinstance(visual_decisions, list)
-        or not isinstance(source_limitations, list)
-    ):
-        raise ValueError("Gemini returned an invalid data structure.")
-
-    valid_visual_types = {
-        "concept_map",
-        "flowchart",
-        "comparison_table",
-        "mechanism_diagram",
-        "timeline",
-        "none",
-    }
-
-    seen_visual_ids = set()
-
-    for index, decision in enumerate(visual_decisions, start=1):
-        if not isinstance(decision, dict):
-            raise ValueError(
-                f"Invalid visual decision at item {index}."
-            )
-
-        visual_id = decision.get("visual_id")
-        if not isinstance(visual_id, str) or not visual_id.strip():
-            raise ValueError(
-                f"Missing or invalid visual_id at item {index}."
-            )
-
-        visual_id = visual_id.strip()
-        if visual_id in seen_visual_ids:
-            raise ValueError(
-                f"Duplicate visual_id '{visual_id}' at item {index}."
-            )
-        seen_visual_ids.add(visual_id)
-
-        visual_type = decision.get("visual_type")
-        if visual_type not in valid_visual_types:
-            raise ValueError(
-                f"Invalid visual type at item {index}."
-            )
-
-        visual_needed = decision.get("visual_needed")
-        if not isinstance(visual_needed, bool):
-            raise ValueError(
-                f"visual_needed must be boolean at item {index}."
-            )
-
-        if visual_needed and visual_type == "none":
-            raise ValueError(
-                f"Decision {visual_id}: visual_needed cannot be true "
-                "when visual_type is 'none'."
-            )
-
-        if not visual_needed and visual_type != "none":
-            raise ValueError(
-                f"Decision {visual_id}: use visual_type='none' "
-                "when visual_needed is false."
-            )
-
-    diagram_types = {"concept_map", "flowchart"}
-    approved_diagrams = {
-        decision["visual_id"]: decision
-        for decision in visual_decisions
-        if decision["visual_needed"]
-        and decision["visual_type"] in diagram_types
-    }
-
-    seen_diagram_ids = set()
-
-    for index, diagram in enumerate(diagrams, start=1):
-        if not isinstance(diagram, dict):
-            raise ValueError(
-                f"Invalid diagram structure at item {index}."
-            )
-
-        visual_id = diagram.get("visual_id")
-        if not isinstance(visual_id, str) or not visual_id.strip():
-            raise ValueError(
-                f"Missing or invalid diagram visual_id at item {index}."
-            )
-
-        visual_id = visual_id.strip()
-
-        if visual_id in seen_diagram_ids:
-            raise ValueError(
-                f"Duplicate diagram visual_id '{visual_id}'."
-            )
-        seen_diagram_ids.add(visual_id)
-
-        decision = approved_diagrams.get(visual_id)
-        if decision is None:
-            raise ValueError(
-                f"Diagram '{visual_id}' has no matching approved "
-                "concept_map or flowchart decision."
-            )
-
-    for visual_id in approved_diagrams:
-        if visual_id not in seen_diagram_ids:
-            raise ValueError(
-                f"Approved diagram decision '{visual_id}' has no "
-                "corresponding diagram."
-            )
-
-    for index, question in enumerate(mcqs, start=1):
-        if not isinstance(question, dict):
-            raise ValueError(f"Invalid MCQ structure at question {index}.")
-
-        options = question.get("options", {})
-        if (
-            not isinstance(options, dict)
-            or set(options.keys()) != {"A", "B", "C", "D"}
-            or question.get("correct_answer") not in {"A", "B", "C", "D"}
-        ):
-            raise ValueError(f"Invalid MCQ structure at question {index}.")
-
-    return {
-        "visual_decisions": visual_decisions,
-        "diagrams": diagrams[:3],
-        "mcqs": mcqs,
-        "source_limitations": source_limitations,
-    }

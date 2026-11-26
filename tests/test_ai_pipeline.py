@@ -1,4 +1,4 @@
-"""AI analysis (ai_assistant.py) and the Template 2 PDF (educational_pdf.py).
+"""AI analysis in ai_assistant.py: per-slide notes and the lecture assistant.
 
 Gemini is replaced by FakeGemini, so these tests cost nothing and run offline.
 Tests marked expectedFailure document known bugs scheduled for a later phase;
@@ -12,10 +12,7 @@ from unittest import mock
 import pymupdf
 
 import ai_assistant
-from educational_pdf import make_ai_lecture_notes_pdf
 from tests.helpers import SAMPLE_PDF, FakeGemini
-
-A4 = (595.28, 841.89)
 
 
 def slide_json(page):
@@ -23,6 +20,8 @@ def slide_json(page):
         "title": f"Slide {page}",
         "explanation_ar": f"شرح الشريحة {page} مع مصطلح (Informed Consent).",
         "key_points": [f"Point {page}.1", f"Point {page}.2"],
+        "review_question_ar": f"سؤال الشريحة {page}؟",
+        "summary_ar": f"خلاصة الشريحة {page}.",
     }, ensure_ascii=False)
 
 
@@ -65,6 +64,19 @@ class AnalyzePagesTest(unittest.TestCase):
         parts = fake.calls[0]["contents"]
         self.assertEqual(len(parts), 2)
 
+    def test_requests_structured_json_with_cornell_fields(self):
+        notes, fake = self.run_with([slide_json(1)])
+        config = fake.calls[0]["config"]
+        self.assertEqual(config.response_mime_type, "application/json")
+        self.assertEqual(notes[0]["review_question_ar"], "سؤال الشريحة 1؟")
+        self.assertEqual(notes[0]["summary_ar"], "خلاصة الشريحة 1.")
+
+    def test_missing_optional_fields_become_empty(self):
+        minimal = json.dumps({"title": "T", "explanation_ar": "شرح", "key_points": []})
+        notes, _ = self.run_with([minimal])
+        self.assertEqual(notes[0]["review_question_ar"], "")
+        self.assertEqual(notes[0]["summary_ar"], "")
+
 
 class AnalyzeLectureTest(unittest.TestCase):
     def test_question_count_bounds(self):
@@ -86,29 +98,6 @@ class AnalyzeLectureTest(unittest.TestCase):
         with mock.patch.object(ai_assistant, "get_gemini_client", return_value=fake):
             ai_assistant.analyze_lecture(pdf, question_count=5)
         self.assertIn("SOURCE PAGE 40", fake.calls[0]["contents"])
-
-
-class AiLectureNotesPdfTest(unittest.TestCase):
-    def setUp(self):
-        self.source = SAMPLE_PDF.read_bytes()
-        self.notes = [json.loads(slide_json(n)) | {"source_page": n} for n in range(1, 5)]
-
-    def test_a4_portrait_and_page_count(self):
-        for pps, expected in ((1, 4), (2, 2)):
-            with self.subTest(pages_per_sheet=pps):
-                out = make_ai_lecture_notes_pdf(self.source, self.notes, pages_per_sheet=pps)
-                with pymupdf.open(stream=out, filetype="pdf") as doc:
-                    self.assertEqual(doc.page_count, expected)
-                    self.assertAlmostEqual(doc[0].rect.width, A4[0], places=1)
-                    self.assertAlmostEqual(doc[0].rect.height, A4[1], places=1)
-
-    def test_rejects_bad_input(self):
-        with self.assertRaises(ValueError):
-            make_ai_lecture_notes_pdf(self.source, [], pages_per_sheet=1)
-        with self.assertRaises(ValueError):
-            make_ai_lecture_notes_pdf(self.source, self.notes, pages_per_sheet=3)
-        with self.assertRaises(ValueError):
-            make_ai_lecture_notes_pdf(self.source, [{"source_page": 9}], pages_per_sheet=1)
 
 
 if __name__ == "__main__":

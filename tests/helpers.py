@@ -7,7 +7,6 @@ warnings.filterwarnings("ignore", message=".*fitz.*deprecated", category=FutureW
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
-GOLDEN = ROOT / "tests" / "golden"
 OUTPUT = ROOT / "tests" / "output"
 SAMPLE_PDF = FIXTURES / "sample_lecture.pdf"
 
@@ -32,7 +31,7 @@ class FakeGemini:
         self.calls = []
         self.models = self
 
-    def generate_content(self, model, contents):
-        self.calls.append({"model": model, "contents": contents})
+    def generate_content(self, model, contents, config=None):
+        self.calls.append({"model": model, "contents": contents, "config": config})
         text = self._responses.pop(0) if len(self._responses) > 1 else self._responses[0]
         return type("Response", (), {"text": text})()
