@@ -150,6 +150,42 @@ class TextDirectionTest(unittest.TestCase):
                 self.assertEqual(ai_cornell.text_direction(text), expected)
 
 
+class EscapeTest(unittest.TestCase):
+    """Protection of English runs inside Arabic sentences."""
+
+    LRM, NBSP, NB_HYPHEN = ai_cornell.LRM, ai_cornell.NBSP, ai_cornell.NB_HYPHEN
+
+    def test_parenthesised_terms_stay_on_one_line(self):
+        out = ai_cornell._escape("قرارات (End-of-life decision making) مهمة")
+        self.assertIn("(End" + self.NB_HYPHEN + "of" + self.NB_HYPHEN + "life" + self.NBSP
+                      + "decision" + self.NBSP + "making)", out)
+
+    def test_very_long_terms_may_wrap(self):
+        term = "A " * 30
+        self.assertNotIn(self.NBSP, ai_cornell._escape(f"نص ({term.strip()}) نص"))
+
+    def test_measurements_fenced_only_in_rtl(self):
+        text = "الجرعة 5 mg/day عند 37 °C"
+        rtl = ai_cornell._escape(text, rtl=True)
+        self.assertIn(self.LRM + "5" + self.NBSP + "mg/day" + self.LRM, rtl)
+        self.assertIn(self.LRM + "37" + self.NBSP + "°C" + self.LRM, rtl)
+        self.assertNotIn(self.LRM, ai_cornell._escape(text, rtl=False))
+
+    def test_plain_numbers_and_words_untouched(self):
+        for text in ("الشريحة رقم 35 تشرح", "Slide 1 title", "مستقبلات 2 receptors"):
+            with self.subTest(text=text):
+                self.assertNotIn(self.LRM, ai_cornell._escape(text, rtl=True))
+
+    def test_html_is_escaped(self):
+        self.assertIn("&lt;script&gt;", ai_cornell._escape("<script>alert(1)</script>"))
+
+    def test_failed_slide_keeps_page_with_notice(self):
+        unit = ai_cornell.Unit.from_note(
+            {"source_page": 3, "error": "quota", "title": "", "explanation_ar": "",
+             "key_points": []})
+        self.assertEqual(unit.sentences, [ai_cornell.LABELS["failed"]])
+
+
 class RegistryTest(unittest.TestCase):
     def test_default_template_is_registered(self):
         template = TEMPLATES[DEFAULT_TEMPLATE]

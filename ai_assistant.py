@@ -1,11 +1,33 @@
+import json
+import logging
 import os
+import random
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fitz
+import httpx
 from google import genai
+from google.genai import errors as genai_errors
 
 
-MODEL_NAME = "gemini-3.8-flash"
-MAX_INPUT_CHARS = 60000
+logger = logging.getLogger(__name__)
+
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# Upper bound for the lecture assistant's input. Longer lectures are rejected
+# with a clear message instead of being silently cut.
+MAX_INPUT_CHARS = 500_000
+
+# Slides analyzed at the same time for one lecture, and Gemini requests in
+# flight across all users of this server (protects the API key's quota).
+SLIDE_WORKERS = int(os.environ.get("GEMINI_SLIDE_WORKERS", "8"))
+SERVER_MAX_CONCURRENT = int(os.environ.get("GEMINI_MAX_CONCURRENT", "12"))
+MAX_ATTEMPTS = 4
+REQUEST_TIMEOUT_MS = 300_000
+SLIDE_IMAGE_ZOOM = 1.5
+
+_server_slots = threading.BoundedSemaphore(SERVER_MAX_CONCURRENT)
 
 # Structured output: Gemini must answer each slide with this JSON shape.
 SLIDE_NOTES_CONFIG = genai.types.GenerateContentConfig(
@@ -27,24 +49,110 @@ SLIDE_NOTES_CONFIG = genai.types.GenerateContentConfig(
 )
 
 
-def get_gemini_client():
-    """Create a Gemini client without hardcoding API credentials."""
-    api_key = os.environ.get("GEMINI_API_KEY")
+# --------------------------------------------------
+# Errors
+# --------------------------------------------------
+class AIError(RuntimeError):
+    """An AI failure with a `kind` the interface can explain to the user.
 
+    Kinds: missing_key, invalid_key, quota, unavailable, timeout, bad_response,
+    no_text, too_long, unknown. The message never contains the API key.
+    """
+
+    def __init__(self, kind, message):
+        super().__init__(message)
+        self.kind = kind
+
+
+def classify_error(exc):
+    """Map an exception from Gemini or the network to an AIError kind."""
+    if isinstance(exc, AIError):
+        return exc.kind
+    if isinstance(exc, genai_errors.APIError):
+        code = getattr(exc, "code", None)
+        status = str(getattr(exc, "status", "") or "").upper()
+        text = str(exc).lower()
+        if code in (401, 403) or "api key" in text or "api_key" in text:
+            return "invalid_key"
+        if code == 429 or status == "RESOURCE_EXHAUSTED":
+            return "quota"
+        if code in (500, 502, 503, 504):
+            return "unavailable"
+        if code == 404:
+            return "invalid_model"
+        return "unknown"
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, (httpx.TransportError, ConnectionError)):
+        return "unavailable"
+    if isinstance(exc, (json.JSONDecodeError, ValueError)) and "JSON" in str(exc):
+        return "bad_response"
+    return "unknown"
+
+
+# Kinds worth retrying; anything else fails at once.
+RETRYABLE = {"quota", "unavailable", "timeout", "bad_response"}
+# Kinds that will fail for every slide, so the whole run stops.
+FATAL = {"missing_key", "invalid_key", "invalid_model"}
+
+
+def _api_key():
+    """The Gemini key from the environment or Streamlit secrets, else None."""
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         try:
             import streamlit as st
             api_key = st.secrets.get("GEMINI_API_KEY")
         except (FileNotFoundError, KeyError, RuntimeError):
             api_key = None
+    return api_key or None
+
+
+def redact(text, limit=300):
+    """Remove the API key from text, then shorten it (never the other way
+    round, which could leave part of the key behind)."""
+    text = str(text)
+    secret = _api_key()
+    if secret:
+        text = text.replace(secret, "***")
+    return text[:limit]
+
+
+def get_gemini_client():
+    """Create a Gemini client without hardcoding API credentials."""
+    api_key = _api_key()
 
     if not api_key:
-        raise ValueError(
+        raise AIError(
+            "missing_key",
             "Gemini API key is missing. Configure GEMINI_API_KEY "
-            "in Streamlit secrets or environment variables."
+            "in Streamlit secrets or environment variables.",
         )
 
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=genai.types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
+    )
+
+
+def _call_gemini(client, **kwargs):
+    """One Gemini request, holding a server-wide slot while it runs."""
+    with _server_slots:
+        return client.models.generate_content(**kwargs)
+
+
+def _with_retries(func, what):
+    """Run func(), retrying transient failures with exponential backoff."""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return func()
+        except Exception as exc:  # noqa: BLE001 - classified below
+            kind = classify_error(exc)
+            logger.warning("%s failed (attempt %d, %s): %s", what, attempt, kind,
+                           redact(exc))
+            if kind not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                raise AIError(kind, f"{what} failed ({kind}).") from exc
+            time.sleep(min(30, 2 ** attempt) + random.uniform(0, 1))
 
 
 def extract_pdf_text(pdf_bytes):
@@ -63,12 +171,20 @@ def extract_pdf_text(pdf_bytes):
     result = "\n".join(pages).strip()
 
     if not result:
-        raise ValueError(
+        raise AIError(
+            "no_text",
             "No selectable text was found in this PDF. "
-            "Scanned or image-only slides need OCR or image analysis."
+            "Scanned or image-only slides need OCR or image analysis.",
         )
 
-    return result[:MAX_INPUT_CHARS]
+    if len(result) > MAX_INPUT_CHARS:
+        raise AIError(
+            "too_long",
+            f"The lecture has {len(result):,} characters of text; "
+            f"the limit is {MAX_INPUT_CHARS:,}.",
+        )
+
+    return result
 
 
 def analyze_lecture(pdf_bytes, question_count=10):
@@ -123,45 +239,17 @@ SOURCE LECTURE:
 {lecture_text}
 """
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-    )
+    def request():
+        response = _call_gemini(client, model=MODEL_NAME, contents=prompt)
+        text = (response.text or "").strip()
+        if not text:
+            raise AIError("bad_response", "Gemini returned an empty response.")
+        return text
 
-    result = (response.text or "").strip()
-    if not result:
-        raise RuntimeError("Gemini returned an empty response.")
-
-    return result
+    return _with_retries(request, "Lecture analysis")
 
 
-def analyze_pages(pdf_bytes, max_pages=None):
-    """
-    Analyze each PDF page separately.
-    Returns structured data for the educational PDF generator.
-    """
-    client = get_gemini_client()
-    results = []
-
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-        page_count = document.page_count
-
-        if max_pages is not None:
-            page_count = min(page_count, max_pages)
-
-        for index in range(page_count):
-            page = document[index]
-            page_text = page.get_text("text").strip()
-
-            # Provide a rendered page image so image-based slides can
-            # still be analyzed when selectable text is unavailable.
-            pix = page.get_pixmap(
-                matrix=fitz.Matrix(1.5, 1.5),
-                alpha=False,
-            )
-            image_bytes = pix.tobytes("png")
-
-            prompt = f"""
+SLIDE_PROMPT = """
 You are helping a university student study a lecture slide.
 
 Analyze ONLY this slide. Do not invent information.
@@ -193,47 +281,142 @@ Rules:
 - Do not include Markdown fences or any text outside JSON.
 
 Extracted slide text:
-{page_text[:12000] if page_text else "[No selectable text found; analyze the slide image.]"}
+{slide_text}
 """
 
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=[
-                    prompt,
-                    genai.types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type="image/png",
-                    ),
-                ],
-                config=SLIDE_NOTES_CONFIG,
+
+def _prepare_slides(pdf_bytes, page_numbers):
+    """Text and a JPEG image for each requested page (1-based).
+
+    Done up front on one thread because PyMuPDF is not thread-safe.
+    """
+    slides = {}
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        for number in page_numbers:
+            page = document[number - 1]
+            pixmap = page.get_pixmap(
+                matrix=fitz.Matrix(SLIDE_IMAGE_ZOOM, SLIDE_IMAGE_ZOOM),
+                alpha=False,
             )
+            slides[number] = (
+                page.get_text("text").strip(),
+                pixmap.tobytes("jpeg", jpg_quality=85),
+            )
+    return slides
 
-            raw = (response.text or "").strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[-1]
-                if raw.endswith("```"):
-                    raw = raw[:-3].strip()
 
-            import json
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Gemini returned invalid JSON for source page {index + 1}: "
-                    f"{raw[:300]}"
-                ) from exc
+def _parse_slide_json(raw, page_number):
+    raw = (raw or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AIError(
+            "bad_response",
+            f"Gemini returned invalid JSON for source page {page_number}.",
+        ) from exc
+    if not isinstance(data, dict):
+        raise AIError(
+            "bad_response",
+            f"Gemini returned invalid JSON for source page {page_number}.",
+        )
+    return {
+        "source_page": page_number,
+        "title": str(data.get("title") or f"Slide {page_number}"),
+        "explanation_ar": str(data.get("explanation_ar") or ""),
+        "key_points": [str(point) for point in data.get("key_points") or []],
+        "review_question_ar": str(data.get("review_question_ar") or ""),
+        "summary_ar": str(data.get("summary_ar") or ""),
+    }
 
-            results.append({
-                "source_page": index + 1,
-                "title": str(data.get("title") or f"Slide {index + 1}"),
-                "explanation_ar": str(data.get("explanation_ar") or ""),
-                "key_points": [
-                    str(point)
-                    for point in data.get("key_points", [])
-                ],
-                "review_question_ar": str(data.get("review_question_ar") or ""),
-                "summary_ar": str(data.get("summary_ar") or ""),
-                "_image_bytes": image_bytes,
-            })
 
-    return results
+def _analyze_slide(client, page_number, slide_text, image_bytes):
+    prompt = SLIDE_PROMPT.format(
+        slide_text=slide_text[:12000] if slide_text
+        else "[No selectable text found; analyze the slide image.]"
+    )
+
+    def request():
+        response = _call_gemini(
+            client,
+            model=MODEL_NAME,
+            contents=[
+                prompt,
+                genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            ],
+            config=SLIDE_NOTES_CONFIG,
+        )
+        return _parse_slide_json(response.text, page_number)
+
+    return _with_retries(request, f"Slide {page_number}")
+
+
+def failed_note(page_number, kind):
+    """Placeholder for a slide whose analysis failed; the slide itself is kept."""
+    return {
+        "source_page": page_number,
+        "title": f"Slide {page_number}",
+        "explanation_ar": "",
+        "key_points": [],
+        "review_question_ar": "",
+        "summary_ar": "",
+        "error": kind,
+    }
+
+
+def analyze_pages(pdf_bytes, max_pages=None, pages=None, progress=None,
+                  workers=SLIDE_WORKERS):
+    """
+    Analyze PDF pages with Gemini, several at a time.
+
+    Returns one dict per page, ordered by page number, for the note
+    templates. A page that still fails after retries is returned as
+    failed_note() with an "error" kind, so no page is ever dropped and
+    the caller can retry just those pages via `pages`.
+
+    pages: 1-based page numbers to analyze (default: all, or the first
+        max_pages).
+    progress: optional callback(done, total) called on the caller's thread
+        after each page finishes.
+
+    Raises AIError at once for failures that would hit every page
+    (missing or invalid key, unknown model).
+    """
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        page_count = document.page_count
+    if pages is None:
+        limit = page_count if max_pages is None else min(page_count, max_pages)
+        pages = list(range(1, limit + 1))
+    pages = sorted(set(pages))
+    if any(not 1 <= number <= page_count for number in pages):
+        raise ValueError("Requested page is outside the document.")
+
+    client = get_gemini_client()
+    slides = _prepare_slides(pdf_bytes, pages)
+    results = {}
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {
+            pool.submit(_analyze_slide, client, number, *slides[number]): number
+            for number in pages
+        }
+        try:
+            for future in as_completed(futures):
+                number = futures[future]
+                try:
+                    results[number] = future.result()
+                except AIError as exc:
+                    if exc.kind in FATAL:
+                        raise
+                    results[number] = failed_note(number, exc.kind)
+                if progress:
+                    progress(len(results), len(pages))
+        except AIError:
+            for future in futures:
+                future.cancel()
+            raise
+
+    return [results[number] for number in pages]

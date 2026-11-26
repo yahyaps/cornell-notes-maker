@@ -9,9 +9,9 @@ A4 portrait. Each slide becomes one study unit:
     |                        |  (vector, not an image) |
     | Key points (tinted)    +-------------------------+
     |                        |  Review question (cue)  |
+    |                        +-------------------------+
+    |                        |  Summary                |
     +------------------------+-------------------------+
-    | Summary                                          |
-    +--------------------------------------------------+
 
 With two slides per sheet, units are paired on a page when both fit in half a
 page; a unit that needs more room gets a full page, and text that still does
@@ -77,12 +77,15 @@ LABELS = {
     "summary": "الخلاصة",
     "continued": "تابع",
     "slide": "Slide",
+    "failed": "تعذّر تحليل هذه الشريحة بالذكاء الاصطناعي. الشريحة الأصلية معروضة كما هي.",
 }
 
 _ARABIC = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 _LATIN = re.compile(r"[A-Za-z]")
 # Short English term in parentheses, e.g. "(Informed Consent)".
-_PAREN_TERM = re.compile(r"\(([A-Za-z0-9][^()\u0600-\u06FF]{0,38})\)")
+# Up to 48 characters: the longest run that still fits the narrowest text
+# column at the largest text scale, so keeping it unbroken never overflows.
+_PAREN_TERM = re.compile(r"\(([A-Za-z0-9][^()\u0600-\u06FF]{0,47})\)")
 # A number with its unit, e.g. "5 mcg", "37 degC", ">= 140 mmHg", "500 mg/day".
 _UNIT = r"(?:[\u00B5\u03BC]?(?:mg|g|kg|mcg|ng|pg|mL|ml|L|dL|dl|mmol|mol|mEq|IU|U|units?|mmHg|cmH2O|kPa|h|hr|hrs|hours?|min|mins|minutes?|s|sec|seconds?|days?|weeks?|months?|years?|yrs?|mm|cm|m|km|nm|kDa|Da|bpm|Hz|kcal|cal|ppm|x))"
 _MEASUREMENT = re.compile(
@@ -91,6 +94,7 @@ _MEASUREMENT = re.compile(
 )
 _SENTENCE_END = re.compile(r"(?<=[.!?\u061F])\s+")
 NBSP = "\u00A0"
+NB_HYPHEN = "\u2011"   # drawn by MuPDF's fallback font
 LRM = "\u200E"   # left-to-right mark
 
 
@@ -156,7 +160,8 @@ def _escape(text, rtl=False):
     algorithm shows "37 °C" rather than "C° 37".
     """
     escaped = html.escape(_clean(text))
-    escaped = _PAREN_TERM.sub(lambda m: "(" + m.group(1).replace(" ", NBSP) + ")", escaped)
+    escaped = _PAREN_TERM.sub(
+        lambda m: "(" + m.group(1).replace(" ", NBSP).replace("-", NB_HYPHEN) + ")", escaped)
     if rtl:
         escaped = _MEASUREMENT.sub(lambda m: LRM + m.group(0).replace(" ", NBSP) + LRM, escaped)
     return escaped
@@ -192,6 +197,10 @@ class Unit:
 
     @classmethod
     def from_note(cls, note):
+        if note.get("error"):
+            # Analysis failed: keep the slide and say so instead of leaving a gap.
+            return cls(int(note["source_page"]), f"{LABELS['slide']} {note['source_page']}",
+                       [LABELS["failed"]], [], review="", summary="")
         return cls(
             source_page=int(note["source_page"]),
             title=_clean(note.get("title")) or f"{LABELS['slide']} {note['source_page']}",
@@ -335,23 +344,29 @@ class Layout:
         gap = BLOCK_GAP if explanation and points_box else 0
         return explanation + gap + points_box
 
-    def right_height(self, unit, width, unit_height, share):
+    def right_height(self, unit, width, unit_height, share, with_summary=True):
+        """Slide, then the review question, then the summary."""
         if unit.continued:
             return 0.0
-        _, slide_h = self.slide_size(unit, width, unit_height, share)
-        review = self.box_height(unit.review_html(), width)
-        return slide_h + (BLOCK_GAP + review if review else 0)
-
-    def summary_height(self, unit, width):
-        return self.box_height(unit.summary_html(), width)
+        _, height = self.slide_size(unit, width, unit_height, share)
+        boxes = [unit.review_html()] + ([unit.summary_html()] if with_summary else [])
+        for body in boxes:
+            if body:
+                height += BLOCK_GAP + self.box_height(body, width)
+        return height
 
     def needed_height(self, unit, rect, sentences, points, scale,
                       share=SLIDE_SHARES[0], with_summary=True):
         left_w, right_w = column_widths(rect.width, unit)
-        body = max(self.left_height(unit, left_w, sentences, points, scale),
-                   self.right_height(unit, right_w, rect.height, share))
-        summary = self.summary_height(unit, rect.width) if with_summary else 0
-        return TITLE_H + BLOCK_GAP + body + (BLOCK_GAP + summary if summary else 0)
+        left = self.left_height(unit, left_w, sentences, points, scale)
+        if unit.continued:
+            # No slide column: the summary closes the full-width text.
+            summary = self.box_height(unit.summary_html(), left_w) if with_summary else 0
+            body = left + (BLOCK_GAP + summary if summary else 0)
+        else:
+            body = max(left, self.right_height(unit, right_w, rect.height, share,
+                                               with_summary))
+        return TITLE_H + BLOCK_GAP + body
 
 
 class Planner:
@@ -499,27 +514,28 @@ class Renderer:
         if points:
             y = self.text_box(page, left_x, y, left_w, points, SAGE_TINT, scale=scale,
                               accent=True)
-        left_bottom = y
 
-        # Right column: the original slide as vector content, then the review question.
-        right_bottom = top
-        if not unit.continued:
+        # Right column: the original slide as vector content, the review
+        # question, then the summary (balances the usually longer left column).
+        summary = unit.summary_html()
+        if unit.continued:
+            if summary:
+                self.text_box(page, left_x, y + BLOCK_GAP, left_w, summary,
+                              SUMMARY_TINT, SAGE_BORDER)
+        else:
             slide_w, slide_h = self.layout.slide_size(unit, right_w, rect.height,
                                                       plan.slide_share)
             slide = pymupdf.Rect(right_x, top, right_x + slide_w, top + slide_h)
             page.show_pdf_page(slide, self.source, unit.source_page - 1, keep_proportion=True)
             page.draw_rect(slide, color=_rgb(SAGE_BORDER), width=0.8)
-            right_bottom = slide.y1
+            y = slide.y1
             review = unit.review_html()
             if review:
-                right_bottom = self.text_box(page, right_x, slide.y1 + BLOCK_GAP, right_w,
-                                             review, WHITE, SAGE_BORDER)
-
-        # Summary directly below the taller column.
-        summary = unit.summary_html()
-        if summary:
-            self.text_box(page, rect.x0, max(left_bottom, right_bottom) + BLOCK_GAP,
-                          rect.width, summary, SUMMARY_TINT, SAGE_BORDER)
+                y = self.text_box(page, right_x, y + BLOCK_GAP, right_w,
+                                  review, WHITE, SAGE_BORDER)
+            if summary:
+                self.text_box(page, right_x, y + BLOCK_GAP, right_w, summary,
+                              SUMMARY_TINT, SAGE_BORDER)
 
     def page(self, out, plan, number, total):
         page = out.new_page(width=PAGE_W, height=PAGE_H)

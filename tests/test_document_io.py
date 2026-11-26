@@ -61,5 +61,18 @@ class RenderPreviewTest(unittest.TestCase):
                 self.assertTrue(png.startswith(b"\x89PNG"))
 
 
+class SubprocessEnvTest(unittest.TestCase):
+    def test_secrets_never_reach_libreoffice(self):
+        from unittest import mock
+        import document_io
+
+        with mock.patch.dict(document_io.os.environ,
+                             {"GEMINI_API_KEY": "secret", "PATH": "/usr/bin"}):
+            env = document_io._subprocess_env("/tmp/x")
+        self.assertNotIn("GEMINI_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+        self.assertEqual(env["HOME"], "/tmp/x")
+
+
 if __name__ == "__main__":
     unittest.main()

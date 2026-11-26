@@ -1,12 +1,25 @@
 """Shared document helpers: turn uploads into PDF and render preview images."""
 
 import io
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 import fitz  # PyMuPDF
 from PIL import Image
+
+
+# Only these variables reach LibreOffice. Streamlit copies secrets such as
+# GEMINI_API_KEY into os.environ, and a converter handling untrusted files
+# must never inherit them.
+_SAFE_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
+
+
+def _subprocess_env(home_dir):
+    env = {key: os.environ[key] for key in _SAFE_ENV_KEYS if key in os.environ}
+    env["HOME"] = str(home_dir)
+    return env
 
 
 def convert_to_pdf(uploaded_file):
@@ -62,6 +75,7 @@ def convert_to_pdf(uploaded_file):
                 text=True,
                 timeout=120,
                 check=True,
+                env=_subprocess_env(temp_dir),
             )
 
             output_path = input_path.with_suffix(".pdf")
