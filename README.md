@@ -30,7 +30,7 @@ register it in `note_templates/__init__.py`. The app lists every registered temp
 | `document_io.py` | Upload → PDF conversion, preview rendering |
 | `note_templates/` | PDF templates; `__init__.py` registers them, `ai_cornell.py` is the current one |
 | `ai_assistant.py` | Gemini calls: per-slide analysis and the lecture assistant |
-| `assets/fonts/` | IBM Plex Sans Arabic (SIL OFL), one font for Arabic and English text |
+| `assets/fonts/` | Almarai (SIL OFL), one font for Arabic and English text |
 | `tests/` | Automated tests (see below) |
 
 ## Setup

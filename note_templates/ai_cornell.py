@@ -59,13 +59,15 @@ SAGE_BORDER = "#CFDDD5"
 MUTED = "#77787B"
 SUMMARY_TINT = "#F6F6F4"
 
-# IBM Plex Sans Arabic covers Arabic, Latin and shared punctuation in one font,
-# so mixed sentences never fall back to a font that lacks a glyph (e.g. "؟").
+# Almarai covers Arabic, Latin and shared punctuation in one font, so mixed
+# sentences never fall back to a font that lacks a glyph (e.g. "؟"), and
+# its glyphs map back to the right characters when text is copied or searched.
+# Symbols it lacks (Greek letters, arrows) are drawn by MuPDF's fallback fonts.
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 REQUIRED_FONTS = (
-    "IBMPlexSansArabic-Regular.ttf",
-    "IBMPlexSansArabic-SemiBold.ttf",
-    "IBMPlexSansArabic-Bold.ttf",
+    "Almarai-Regular.ttf",
+    "Almarai-Bold.ttf",
+    "Almarai-ExtraBold.ttf",
 )
 
 LABELS = {
@@ -77,11 +79,19 @@ LABELS = {
     "slide": "Slide",
 }
 
-_ARABIC = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
+_ARABIC = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 _LATIN = re.compile(r"[A-Za-z]")
 # Short English term in parentheses, e.g. "(Informed Consent)".
-_PAREN_TERM = re.compile(r"\(([A-Za-z0-9][^()؀-ۿ]{0,38})\)")
-_SENTENCE_END = re.compile(r"(?<=[.!?؟])\s+")
+_PAREN_TERM = re.compile(r"\(([A-Za-z0-9][^()\u0600-\u06FF]{0,38})\)")
+# A number with its unit, e.g. "5 mcg", "37 degC", ">= 140 mmHg", "500 mg/day".
+_UNIT = r"(?:[\u00B5\u03BC]?(?:mg|g|kg|mcg|ng|pg|mL|ml|L|dL|dl|mmol|mol|mEq|IU|U|units?|mmHg|cmH2O|kPa|h|hr|hrs|hours?|min|mins|minutes?|s|sec|seconds?|days?|weeks?|months?|years?|yrs?|mm|cm|m|km|nm|kDa|Da|bpm|Hz|kcal|cal|ppm|x))"
+_MEASUREMENT = re.compile(
+    r"(?:[\u2265\u2264<>=\u00B1~\u2248]\s?)?\d+(?:[.,]\d+)?(?:\s?[-\u2013]\s?\d+(?:[.,]\d+)?)?"
+    r"\s?(?:\u00B0\s?[CF]|%|" + _UNIT + r"(?:/" + _UNIT + r")*)(?![A-Za-z])"
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?\u061F])\s+")
+NBSP = "\u00A0"
+LRM = "\u200E"   # left-to-right mark
 
 
 @lru_cache(maxsize=None)
@@ -90,15 +100,15 @@ def css(scale=1.0):
     def pt(size):
         return f"{size * scale:.2f}pt"
     return f"""
-@font-face {{font-family: plex; src: url(IBMPlexSansArabic-Regular.ttf);}}
-@font-face {{font-family: plex; src: url(IBMPlexSansArabic-Bold.ttf); font-weight: bold;}}
-@font-face {{font-family: plexsemi; src: url(IBMPlexSansArabic-SemiBold.ttf);}}
-* {{font-family: plex; color: {CHARCOAL}; font-size: {pt(9.6)}; line-height: 1.6;
+@font-face {{font-family: almarai; src: url(Almarai-Regular.ttf);}}
+@font-face {{font-family: almarai; src: url(Almarai-Bold.ttf); font-weight: bold;}}
+@font-face {{font-family: almaraix; src: url(Almarai-ExtraBold.ttf);}}
+* {{font-family: almarai; color: {CHARCOAL}; font-size: {pt(9.6)}; line-height: 1.75;
     margin: 0; padding: 0;}}
-.label {{font-family: plexsemi; color: {SAGE}; font-size: {pt(8.4)}; margin-bottom: {pt(2)};}}
+.label {{font-weight: bold; color: {SAGE}; font-size: {pt(8.4)}; margin-bottom: {pt(2)};}}
 .pt {{margin-bottom: {pt(2.5)};}}
-.title {{font-weight: bold; font-size: {pt(11)}; line-height: 1.3;}}
-.badge {{color: {WHITE}; font-weight: bold; font-size: {pt(9.5)}; text-align: center;
+.title {{font-family: almaraix; font-size: {pt(11)}; line-height: 1.3;}}
+.badge {{font-family: almaraix; color: {WHITE}; font-size: {pt(9.5)}; text-align: center;
          line-height: 1.3;}}
 .header {{font-size: {pt(8.4)}; color: {MUTED}; line-height: 1.3;}}
 .header b {{color: {SAGE}; font-size: {pt(10)};}}
@@ -138,15 +148,24 @@ def _clean(text):
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
-def _escape(text):
-    """Escape for HTML and keep short parenthesised English terms on one line."""
+def _escape(text, rtl=False):
+    """Escape for HTML and protect English runs inside Arabic sentences.
+
+    Short parenthesised terms are kept on one line. In right-to-left text a
+    number with its unit is fenced with left-to-right marks, so the bidi
+    algorithm shows "37 °C" rather than "C° 37".
+    """
     escaped = html.escape(_clean(text))
-    return _PAREN_TERM.sub(lambda m: "(" + m.group(1).replace(" ", " ") + ")", escaped)
+    escaped = _PAREN_TERM.sub(lambda m: "(" + m.group(1).replace(" ", NBSP) + ")", escaped)
+    if rtl:
+        escaped = _MEASUREMENT.sub(lambda m: LRM + m.group(0).replace(" ", NBSP) + LRM, escaped)
+    return escaped
 
 
 def _para(text, cls=""):
     cls_attr = f' class="{cls}"' if cls else ""
-    return f'<div{cls_attr} dir="{text_direction(text)}">{_escape(text)}</div>'
+    direction = text_direction(text)
+    return f'<div{cls_attr} dir="{direction}">{_escape(text, direction == "rtl")}</div>'
 
 
 def _label(key, continued=False):
