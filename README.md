@@ -1,84 +1,64 @@
-cd /home/yahya/cornell_notes_mvp
-
-cat > README.md <<'EOF'
 # Cornell Notes Maker
 
-A bilingual Arabic/English Streamlit application that converts lecture documents into organized Cornell-style PDF notes with a live preview.
+A bilingual (Arabic/English) Streamlit app that turns university lecture files into
+study notes: printable Cornell sheets, AI-explained lecture notes, and an AI lecture
+assistant powered by Google Gemini.
 
 ## Features
 
-- Two selectable Cornell note templates.
-- Choose between one or two source pages per output sheet.
-- Live PDF preview that updates when the uploaded file or layout settings change.
-- Download the same PDF displayed in the preview.
-- Supports PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, JPEG, and TXT files.
-- Converts Microsoft Word and PowerPoint documents to PDF using LibreOffice.
-- Supports Arabic and English interface languages.
-- Preserves the original uploaded file without modifying it.
-- Exports US Letter pages (8.5 x 11 inches).
+- **Template 1 – Cornell notes:** course details, Key Points column, the original
+  lecture pages, and a personal notes area. One or two source pages per sheet.
+- **Template 2 – AI lecture notes:** Gemini explains every slide in Arabic and lists
+  its key points; the PDF places the explanation beside the original slide (A4 portrait).
+- **AI Lecture Assistant:** Arabic explanation, high-yield points, and practice MCQs
+  for the whole lecture, downloadable as Markdown.
+- Live preview before download.
+- Uploads: PDF, DOC, DOCX, PPT, PPTX, PNG, JPG, JPEG, TXT (Office files are converted
+  with LibreOffice; the original file is never modified).
 
-## Technology Stack
+## Project layout
 
-- Python 3.12
-- Streamlit
-- PyMuPDF
-- Pillow
-- LibreOffice Writer and Impress
+| Path | Purpose |
+|---|---|
+| `app.py` | Streamlit interface |
+| `document_io.py` | Upload → PDF conversion, preview rendering |
+| `note_templates/cornell.py` | Template 1 PDF layout |
+| `educational_pdf.py` | Template 2 PDF layout |
+| `ai_assistant.py` | Gemini calls: per-slide analysis and the lecture assistant |
+| `tests/` | Automated tests (see below) |
 
-## Requirements
+## Setup
 
-- Python 3.12 or a compatible version.
-- Python packages listed in requirements.txt.
-- LibreOffice Writer and Impress for Office document conversion.
-- Docker (recommended).
+Requires Python 3.12+ and, for Word/PowerPoint uploads, LibreOffice
+(`libreoffice` on the PATH). Template 2 needs the Noto Sans Arabic and DejaVu Sans fonts.
 
-## Run with Docker
+    python -m venv .venv
+    .venv/bin/pip install -r requirements.txt
 
-Build the image:
+Provide a Gemini API key either as the environment variable `GEMINI_API_KEY` or in
+`.streamlit/secrets.toml` (git-ignored):
+
+    GEMINI_API_KEY = "your-key"
+
+Run:
+
+    .venv/bin/streamlit run app.py
+
+### Docker
 
     docker build -t cornell-notes-maker .
+    docker run --rm -p 8501:8501 -e PORT=8501 -e GEMINI_API_KEY=your-key cornell-notes-maker
 
-Start the application:
+## Tests
 
-    docker run --rm -p 8501:8501 -e PORT=8501 cornell-notes-maker
+    .venv/bin/python -m unittest discover -s tests -t .
 
-Open http://localhost:8501 in your browser.
+The suite runs offline: Gemini is replaced by a fake client.
 
-## Run Locally
-
-Install dependencies:
-
-    python -m pip install -r requirements.txt
-
-For Word and PowerPoint conversion, install LibreOffice and ensure the `libreoffice` command is available.
-
-Run the application:
-
-    streamlit run app.py
-
-## How to Use
-
-1. Upload a lecture file.
-2. Choose one of the two Cornell templates.
-3. Select one or two source pages per output sheet.
-4. Review the live preview.
-5. Adjust the template or page layout as needed.
-6. Download the generated Cornell PDF.
-
-## Notes and Limitations
-
-- Source pages are scaled to fit the available content area in the selected Cornell template.
-- Dense slides or documents may require one source page per sheet for improved readability.
-- Cue and summary areas are available for handwritten study notes.
-- Office document conversion may vary depending on formatting and available fonts.
-- Review the preview before printing.
-EOF
-
-Template 2 update
-
-Replace these two files in ~/cornell_notes_mvp:
-- app.py
-- educational_pdf.py
-
-Back up your current files first. Keep ai_assistant.py unchanged.
-Template 1 processing remains in the same branch; Template 2 calls analyze_pages only after the user presses Create AI Lecture Notes.
+- `test_cornell_template.py` compares Template 1 against approved images in
+  `tests/golden/`. After an **intentional** design change, regenerate them with
+  `UPDATE_GOLDEN=1` and review the new images before committing.
+- Tests marked `expectedFailure` document known bugs that are scheduled to be fixed.
+- `tests/fixtures/sample_lecture.pdf` is synthetic (rebuild with
+  `python tests/make_fixtures.py`). Real lectures for manual checks go in
+  `tests/fixtures/private/`, which is git-ignored.
