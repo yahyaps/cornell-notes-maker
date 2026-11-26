@@ -30,6 +30,7 @@ CHAT_MESSAGES_PER_HOUR = _int_env("CHAT_MESSAGES_PER_HOUR", 60)
 DAILY_SLIDE_BUDGET = _int_env("DAILY_SLIDE_BUDGET", 3000)
 MAX_AI_SLIDES = _int_env("MAX_AI_SLIDES", 150)
 ACCESS_ATTEMPTS_PER_HOUR = 10   # wrong access codes allowed per visitor
+SUPPORT_TICKETS_PER_HOUR = 5    # support tickets per visitor
 
 WINDOW_SECONDS = 3600
 
@@ -89,6 +90,11 @@ class UsageLimiter:
         """Count an access-code attempt; slows down guessing."""
         with self._lock:
             events, now = self._check_rate(visitor, "access", ACCESS_ATTEMPTS_PER_HOUR)
+            events.append(now)
+
+    def support_ticket(self, visitor):
+        with self._lock:
+            events, now = self._check_rate(visitor, "support", SUPPORT_TICKETS_PER_HOUR)
             events.append(now)
 
     def chat_message(self, visitor):

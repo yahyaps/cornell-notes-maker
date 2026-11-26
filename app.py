@@ -14,6 +14,7 @@ import uuid
 import streamlit as st
 
 import ai_assistant
+import support
 import usage_limits
 from ai_assistant import AIError
 from document_io import DocumentError, load_document, render_pdf_page
@@ -50,25 +51,71 @@ rtl = lang == "ar"
 st.set_page_config(page_title=T["app_title"], page_icon="📘", layout="centered")
 st.query_params["lang"] = lang
 
+def css_text(text):
+    """Text for a CSS `content:` value (quotes and backslashes escaped)."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 st.html(f"""
 <style>
+  /* Layout: fluid on phones, comfortable width on tablets and laptops. */
   [data-testid="stMainBlockContainer"] {{
-    max-width: 860px; padding-top: 2.2rem;
+    max-width: 1120px; padding: 2.4rem 2rem 3rem;
     direction: {"rtl" if rtl else "ltr"}; text-align: {"right" if rtl else "left"};
+  }}
+  @media (max-width: 640px) {{
+    [data-testid="stMainBlockContainer"] {{ padding: 1.2rem .9rem 2rem; }}
   }}
   /* Sliders and file names read left-to-right in both languages. */
   [data-testid="stSlider"], [data-testid="stFileUploaderFileName"] {{ direction: ltr; }}
-  .brand {{ display: flex; align-items: center; gap: .8rem; margin-bottom: .2rem; }}
-  .brand-mark {{ width: 2.6rem; height: 2.6rem; border-radius: .7rem; background: #4D7D67;
-    color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 1.25rem; }}
-  .brand h1 {{ font-size: 1.85rem; font-weight: 800; margin: 0; padding: 0; color: #404042; }}
-  .tagline {{ color: #6B6D70; font-size: 1.02rem; margin: .1rem 0 1.4rem; line-height: 1.8; }}
-  .step {{ font-weight: 800; font-size: 1.15rem; color: #404042; margin: 1.4rem 0 .5rem; }}
-  .muted {{ color: #6B6D70; font-size: .93rem; line-height: 1.8; }}
-  .template-name {{ font-weight: 800; font-size: 1.08rem; color: #4D7D67; margin-bottom: .3rem; }}
-  .footer {{ color: #8A8C8F; font-size: .85rem; text-align: center; margin-top: 2.5rem;
-    line-height: 1.8; }}
-  [data-testid="stImage"] img {{ border: 1px solid #DCE5E0; border-radius: .5rem; }}
+
+  .brand {{ display: flex; align-items: center; gap: .9rem; }}
+  .brand-mark {{ width: clamp(2.6rem, 5vw, 3.4rem); aspect-ratio: 1; border-radius: .8rem;
+    background: #4D7D67; color: #fff; display: grid; place-items: center;
+    font-weight: 800; font-size: clamp(1.3rem, 2.6vw, 1.7rem); flex-shrink: 0; }}
+  .brand h1 {{ font-size: clamp(1.7rem, 4.2vw, 2.7rem); font-weight: 800; margin: 0;
+    padding: 0; color: #404042; line-height: 1.25; }}
+  .tagline {{ color: #5E6063; font-size: clamp(1.05rem, 1.8vw, 1.3rem); line-height: 1.85;
+    margin: .9rem 0 1.6rem; max-width: 52rem; }}
+
+  .features {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem; margin: 0 0 2rem; }}
+  .feature {{ background: #F2F6F4; border: 1px solid #DCE5E0; border-radius: 1rem;
+    padding: 1.2rem 1.3rem; }}
+  .feature .icon {{ font-size: 1.7rem; line-height: 1; }}
+  .feature h3 {{ font-size: 1.15rem; font-weight: 800; color: #4D7D67; margin: .7rem 0 .35rem;
+    padding: 0; }}
+  .feature p {{ font-size: 1rem; color: #5E6063; line-height: 1.8; margin: 0; }}
+
+  .step {{ font-weight: 800; font-size: clamp(1.2rem, 2.2vw, 1.45rem); color: #404042;
+    margin: 1.6rem 0 .7rem; }}
+  .muted {{ color: #5E6063; font-size: 1rem; line-height: 1.85; }}
+  .template-name {{ font-weight: 800; font-size: 1.2rem; color: #4D7D67; margin-bottom: .4rem; }}
+
+  /* Upload area: larger target, translated instructions. */
+  [data-testid="stFileUploaderDropzone"] {{ min-height: 9rem; padding: 1.6rem;
+    border: 2px dashed #A9C2B5; border-radius: 1rem; background: #F7FAF8; }}
+  [data-testid="stFileUploaderDropzoneInstructions"] > div {{ display: none; }}
+  [data-testid="stFileUploaderDropzoneInstructions"]::before {{
+    content: "{css_text(T["upload_drop"])}"; font-size: 1.1rem; font-weight: 700;
+    color: #404042; }}
+  /* Only the browse button (kind=secondary); the file's delete button keeps its icon. */
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"] {{ min-height: 2.8rem;
+    padding: 0 1.4rem; border-radius: .7rem; }}
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"] > div {{ display: none; }}
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"]::after {{
+    content: "{css_text(T["upload_button"])}"; font-size: 1rem; font-weight: 700; }}
+
+  /* Tabs, buttons and messages sized for touch screens. */
+  [data-testid="stTab"] p {{ font-size: 1.1rem; font-weight: 700; }}
+  [data-testid="stButtonGroup"] button p {{ font-size: 1rem; }}
+  .stButton button, .stDownloadButton button, .stFormSubmitButton button {{
+    min-height: 3rem; font-size: 1.05rem; border-radius: .75rem; }}
+  [data-testid="stImage"] img {{ border: 1px solid #DCE5E0; border-radius: .6rem; }}
+
+  .footer {{ color: #7A7C80; font-size: .95rem; text-align: center; margin-top: 3rem;
+    padding-top: 1.4rem; border-top: 1px solid #E6ECE8; line-height: 2; }}
+
   /* AI text: lists follow the interface direction, and each paragraph takes
      the direction of its own first letter (Arabic or English). */
   [data-testid="stChatMessage"], [data-testid="stMarkdownContainer"] {{
@@ -160,6 +207,12 @@ with lang_col:
         label_visibility="collapsed",
     )
 st.html(f'<p class="tagline">{T["tagline"]}</p>')
+# The feature overview is for first-time visitors; it steps aside once a file
+# is loaded so the working steps stay close to the top.
+if st.session_state.get("upload") is None and not st.session_state.get("_test_document"):
+    st.html('<div class="features">' + "".join(
+        f'<div class="feature"><div class="icon">{icon}</div><h3>{title}</h3><p>{body}</p></div>'
+        for icon, title, body in T["features"]) + "</div>")
 
 
 # --------------------------------------------------
@@ -455,10 +508,48 @@ def assistant_tab():
     chat_section()
 
 
-notes_view, assistant_view = st.tabs([f"📄 {T['tab_notes']}", f"💬 {T['tab_assistant']}"])
+# --------------------------------------------------
+# Tab: support
+# --------------------------------------------------
+def support_tab():
+    st.html(f'<p class="muted">{T["support_intro"]}</p>')
+    categories = T["support_categories"]
+    with st.form("support_form", clear_on_submit=False, border=True):
+        category = st.selectbox(T["support_category"], list(categories),
+                                format_func=categories.get, key="support_category")
+        name_col, email_col = st.columns(2)
+        name = name_col.text_input(T["support_name"], max_chars=support.MAX_NAME_CHARS,
+                                   key="support_name")
+        email = email_col.text_input(T["support_email"], max_chars=254, key="support_email")
+        message = st.text_area(T["support_message"], help=T["support_message_help"],
+                               max_chars=support.MAX_MESSAGE_CHARS, height=170,
+                               key="support_message")
+        submitted = st.form_submit_button(f"✉️ {T['support_send']}", type="primary",
+                                          width="stretch")
+    if not submitted:
+        return
+    try:
+        support.validate(email, message, name)
+        limiter.support_ticket(visitor())
+        context = {"Language": lang}
+        if doc:
+            context["Lecture"] = f"{doc['name']} ({doc['pages']} pages)"
+        ticket = support.send_ticket(category, email, message, name, context)
+    except support.TicketError as exc:
+        st.error(T["support_errors"][exc.kind], icon="⚠️")
+    except LimitExceeded as exc:
+        show_limit(exc)
+    else:
+        st.success(T["support_sent"].format(ticket=ticket), icon="✅")
+
+
+notes_view, assistant_view, support_view = st.tabs(
+    [f"📄 {T['tab_notes']}", f"💬 {T['tab_assistant']}", f"🛟 {T['tab_support']}"])
 with notes_view:
     notes_tab()
 with assistant_view:
     assistant_tab()
+with support_view:
+    support_tab()
 
-st.html(f'<div class="footer">{T["privacy"]}<br>{T["app_title"]} · Google Gemini</div>')
+st.html(f'<div class="footer">{T["privacy"]}<br>{T["footer_help"]}</div>')

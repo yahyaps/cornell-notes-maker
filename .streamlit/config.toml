@@ -19,6 +19,7 @@ primaryColor = "#4D7D67"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F2F6F4"
 textColor = "#404042"
+baseFontSize = 17
 borderColor = "#DCE5E0"
 baseRadius = "0.6rem"
 font = "Almarai, sans-serif"

@@ -25,3 +25,9 @@ services:
         value: "150"
       - key: APP_ACCESS_CODE
         sync: false        # optional: set to require a code for AI features
+      - key: SUPPORT_EMAIL_TO
+        sync: false        # receives support tickets; never shown to visitors
+      - key: SMTP_USER
+        sync: false        # account that sends tickets (e.g. a Gmail address)
+      - key: SMTP_PASSWORD
+        sync: false        # that account's app password

@@ -2,20 +2,20 @@
 
 A4 portrait. Each slide becomes one study unit:
 
-    +--------------------------------------------------+
-    | [3] Slide title                                  |
-    +------------------------+-------------------------+
-    | Explanation (Arabic)   |  Original slide         |
-    |                        |  (vector, not an image) |
-    | Key points (tinted)    +-------------------------+
-    |                        |  Review question (cue)  |
-    |                        +-------------------------+
-    |                        |  Summary                |
-    +------------------------+-------------------------+
+    Two per sheet (compact)            One slide per page (stacked)
+    +------------------------------+   +------------------------------+
+    | [3] Slide title              |   | [3] Slide title              |
+    +--------------+---------------+   +------------------------------+
+    | Explanation  | Original      |   |     Original slide, full     |
+    |              | slide         |   |     page width               |
+    | Key points   +---------------+   +-----------------+------------+
+    |              | Review q.     |   | Explanation     | Review q.  |
+    |              | Summary       |   | Key points      | Summary    |
+    +--------------+---------------+   +-----------------+------------+
 
-With two slides per sheet, units are paired on a page when both fit in half a
-page; a unit that needs more room gets a full page, and text that still does
-not fit continues on the next page. Text is never clipped or dropped.
+Two per sheet packs units by their real height (at most two per page). Text
+that does not fit a whole page continues on the next one; it is never clipped
+or dropped. The slide is always vector content, never a picture.
 
 Text is laid out by MuPDF's HTML engine, which applies the Unicode bidi
 algorithm, so Arabic sentences with English terms keep the correct order.
@@ -33,19 +33,25 @@ import pymupdf
 # Page geometry (points) and brand
 # --------------------------------------------------
 PAGE_W, PAGE_H = 595.28, 841.89  # A4 (210 x 297 mm)
-MARGIN_X = 34
-MARGIN_TOP = 28
-MARGIN_BOTTOM = 30
+MARGIN_X = 28
+MARGIN_TOP = 26
+MARGIN_BOTTOM = 26
 HEADER_H = 30
-UNIT_GAP = 18          # between two units on one page
+UNIT_GAP = 20          # between two units on one page
 TITLE_H = 26
 COLUMN_GAP = 14
 BLOCK_GAP = 9
-EXPLANATION_SHARE = 0.52   # explanation column width; slide column gets the rest
-# Slide height limits (share of the unit height) tried in order; only tall,
-# portrait pages are affected, wide slides are limited by the column width.
-SLIDE_SHARES = (0.62, 0.52, 0.42)
 BOX_PAD = 7
+
+# One slide per page ("stacked"): the slide spans the page width on top; the
+# explanation column below gets this share, review and summary the rest.
+STACKED_TEXT_SHARE = 0.58
+STACKED_SLIDE_MAX = (0.5, 0.42, 0.34)   # slide height limits, share of page height
+# Two per sheet ("compact"): explanation beside the slide, split evenly; this
+# mode saves paper, while one slide per page gives the large, readable slide.
+COMPACT_TEXT_SHARE = 0.50
+COMPACT_SLIDE_MAX = (250, 210, 170)     # slide height limits in points (tall pages)
+
 SCALES = (1.0, 0.95, 0.9, 0.85)   # text sizes tried before moving to more space
 MIN_SCALE = SCALES[-1]
 # With one slide per page there is room to spare, so text may also grow.
@@ -290,7 +296,9 @@ class UnitLayout:
     scale: float
     sentences: list
     points: list
-    slide_share: float = SLIDE_SHARES[0]
+    stacked: bool        # large slide across the top (one slide per page)
+    slide_max: float     # height limit for the slide, in points
+    height: float = 0.0  # total height the unit occupies on the page
 
 
 @dataclass
@@ -303,18 +311,13 @@ def content_rect():
     return pymupdf.Rect(MARGIN_X, top, PAGE_W - MARGIN_X, PAGE_H - MARGIN_BOTTOM)
 
 
-def half_rects():
-    full = content_rect()
-    half_h = (full.height - UNIT_GAP) / 2
-    return (pymupdf.Rect(full.x0, full.y0, full.x1, full.y0 + half_h),
-            pymupdf.Rect(full.x0, full.y1 - half_h, full.x1, full.y1))
-
-
-def column_widths(total_width, unit):
-    """(explanation, slide) widths; a continuation has no slide, so text spans all."""
+def column_widths(total_width, unit, stacked):
+    """(explanation, side) widths. Side is the slide column (compact layout) or
+    the review/summary column (stacked layout); a continuation has neither."""
     if unit.continued:
         return total_width, 0.0
-    left = (total_width - COLUMN_GAP) * EXPLANATION_SHARE
+    share = STACKED_TEXT_SHARE if stacked else COMPACT_TEXT_SHARE
+    left = (total_width - COLUMN_GAP) * share
     return left, total_width - COLUMN_GAP - left
 
 
@@ -325,13 +328,12 @@ class Layout:
         self.ts = typesetter
         self.source = source
 
-    def slide_size(self, unit, width, unit_height, share):
+    def slide_size(self, unit, max_width, max_height):
         src = self.source[unit.source_page - 1].rect
         ratio = src.height / src.width if src.width else 0.75
-        w, h = width, width * ratio
-        max_h = unit_height * share
-        if h > max_h:
-            w, h = max_h / ratio, max_h
+        w, h = max_width, max_width * ratio
+        if h > max_height:
+            w, h = max_height / ratio, max_height
         return w, h
 
     def box_height(self, body, width, scale=1.0):
@@ -345,46 +347,68 @@ class Layout:
         gap = BLOCK_GAP if explanation and points_box else 0
         return explanation + gap + points_box
 
-    def right_height(self, unit, width, unit_height, share, with_summary=True):
-        """Slide, then the review question, then the summary."""
-        if unit.continued:
-            return 0.0
-        _, height = self.slide_size(unit, width, unit_height, share)
-        boxes = [unit.review_html()] + ([unit.summary_html()] if with_summary else [])
-        for body in boxes:
-            if body:
-                height += BLOCK_GAP + self.box_height(body, width)
-        return height
+    def boxes_height(self, unit, width, with_summary=True):
+        """Review question and summary boxes stacked with a gap between them."""
+        bodies = [unit.review_html()] + ([unit.summary_html()] if with_summary else [])
+        heights = [self.box_height(body, width) for body in bodies if body]
+        return sum(heights) + BLOCK_GAP * max(0, len(heights) - 1)
 
-    def needed_height(self, unit, rect, sentences, points, scale,
-                      share=SLIDE_SHARES[0], with_summary=True):
-        left_w, right_w = column_widths(rect.width, unit)
+    def needed_height(self, unit, width, sentences, points, scale, stacked, slide_max,
+                      with_summary=True):
+        left_w, side_w = column_widths(width, unit, stacked)
         left = self.left_height(unit, left_w, sentences, points, scale)
         if unit.continued:
-            # No slide column: the summary closes the full-width text.
+            # No slide: the summary closes the full-width text.
             summary = self.box_height(unit.summary_html(), left_w) if with_summary else 0
-            body = left + (BLOCK_GAP + summary if summary else 0)
-        else:
-            body = max(left, self.right_height(unit, right_w, rect.height, share,
-                                               with_summary))
-        return TITLE_H + BLOCK_GAP + body
+            return TITLE_H + BLOCK_GAP + left + (BLOCK_GAP + summary if summary else 0)
+        boxes = self.boxes_height(unit, side_w, with_summary)
+        if stacked:
+            _, slide_h = self.slide_size(unit, width, slide_max)
+            return TITLE_H + BLOCK_GAP + slide_h + BLOCK_GAP + max(left, boxes)
+        _, slide_h = self.slide_size(unit, side_w, slide_max)
+        side = slide_h + (BLOCK_GAP + boxes if boxes else 0)
+        return TITLE_H + BLOCK_GAP + max(left, side)
 
 
 class Planner:
+    """Places units on pages in order.
+
+    One slide per page: each unit gets a page with the slide across the top.
+    Two per sheet: units are packed by their real height, at most two per
+    page, so short units share a page instead of leaving half of it empty.
+    A unit too long for a whole page continues on the next one.
+    """
+
     def __init__(self, layout):
         self.layout = layout
+        full = content_rect()
+        self.width, self.page_height = full.width, full.height
+        self.stacked = False
 
-    def fit(self, unit, rect, scales=SCALES):
-        """Largest text scale at which the whole unit fits in rect, else None."""
-        for share in SLIDE_SHARES:
+    def _limits(self):
+        if self.stacked:
+            return (tuple(share * self.page_height for share in STACKED_SLIDE_MAX),
+                    SINGLE_PAGE_SCALES)
+        return COMPACT_SLIDE_MAX, SCALES
+
+    def _needed(self, unit, sentences, points, scale, slide_max, with_summary=True):
+        return self.layout.needed_height(unit, self.width, sentences, points, scale,
+                                         self.stacked, slide_max, with_summary)
+
+    def fit(self, unit, height):
+        """Largest slide, then largest text, at which the unit fits; else None."""
+        slide_limits, scales = self._limits()
+        for slide_max in slide_limits:
             for scale in scales:
-                if self.layout.needed_height(unit, rect, unit.sentences, unit.points,
-                                             scale, share) <= rect.height:
-                    return UnitLayout(unit, scale, unit.sentences, unit.points, share)
+                need = self._needed(unit, unit.sentences, unit.points, scale, slide_max)
+                if need <= height:
+                    return UnitLayout(unit, scale, unit.sentences, unit.points,
+                                      self.stacked, slide_max, need)
         return None
 
-    def split(self, unit, rect):
-        """Fill rect with as much text as fits at MIN_SCALE; return (layout, rest)."""
+    def split(self, unit):
+        """Fill a page with as much text as fits at MIN_SCALE; return (layout, rest)."""
+        slide_max = self._limits()[0][-1]
         items = [("s", s) for s in unit.sentences] + [("p", p) for p in unit.points]
 
         def parts(chunk):
@@ -394,8 +418,8 @@ class Planner:
         keep = 1  # Always make progress, even if one sentence is very long.
         for count in range(2, len(items) + 1):
             sentences, points = parts(items[:count])
-            if self.layout.needed_height(unit, rect, sentences, points, MIN_SCALE,
-                                         SLIDE_SHARES[-1], with_summary=False) > rect.height:
+            if self._needed(unit, sentences, points, MIN_SCALE, slide_max,
+                            with_summary=False) > self.page_height:
                 break
             keep = count
         sentences, points = parts(items[:keep])
@@ -405,28 +429,30 @@ class Planner:
         # The summary closes the unit, so it moves to the continuation.
         head = Unit(unit.source_page, unit.title, unit.sentences, unit.points,
                     unit.review, summary="", continued=unit.continued)
-        return UnitLayout(head, MIN_SCALE, sentences, points, SLIDE_SHARES[-1]), rest
+        height = self._needed(head, sentences, points, MIN_SCALE, slide_max)
+        return UnitLayout(head, MIN_SCALE, sentences, points, self.stacked, slide_max,
+                          min(height, self.page_height)), rest
 
     def plan(self, units, pages_per_sheet):
-        full = content_rect()
-        top_half, _ = half_rects()
-        pages, queue = [], list(units)
+        self.stacked = pages_per_sheet == 1
+        pages, queue, current, used = [], list(units), [], 0.0
         while queue:
-            unit = queue.pop(0)
-            if pages_per_sheet == 2:
-                first = self.fit(unit, top_half)
-                if first:
-                    second = self.fit(queue[0], top_half) if queue else None
-                    if second:
-                        queue.pop(0)
-                    pages.append(PagePlan([first] + ([second] if second else [])))
-                    continue
-            layout = self.fit(unit, full,
-                              SINGLE_PAGE_SCALES if pages_per_sheet == 1 else SCALES)
-            if layout is None:
-                layout, rest = self.split(unit, full)
+            gap = UNIT_GAP if current else 0
+            layout = (self.fit(queue[0], self.page_height - used - gap)
+                      if len(current) < pages_per_sheet else None)
+            if layout:
+                queue.pop(0)
+                current.append(layout)
+                used += gap + layout.height
+            elif current:
+                pages.append(PagePlan(current))
+                current, used = [], 0.0
+            else:
+                head, rest = self.split(queue.pop(0))
                 queue.insert(0, rest)
-            pages.append(PagePlan([layout]))
+                pages.append(PagePlan([head]))
+        if current:
+            pages.append(PagePlan(current))
         return pages
 
 
@@ -498,12 +524,24 @@ class Renderer:
         self.ts.draw(page, x0 + BOX_PAD, y0 + BOX_PAD, width - 2 * BOX_PAD, body, scale)
         return box.y1
 
+    def slide(self, page, rect):
+        page.show_pdf_page(rect, self.source, self.current_slide - 1, keep_proportion=True)
+        page.draw_rect(rect, color=_rgb(SAGE_BORDER), width=0.8)
+
     def unit(self, page, rect, plan):
         unit, scale = plan.unit, plan.scale
+        self.current_slide = unit.source_page
         self.title_bar(page, rect, unit)
-        left_w, right_w = column_widths(rect.width, unit)
+        left_w, side_w = column_widths(rect.width, unit, plan.stacked)
         top = rect.y0 + TITLE_H + BLOCK_GAP
-        left_x, right_x = rect.x0, rect.x0 + left_w + COLUMN_GAP
+
+        # One slide per page: the slide spans the full width above the text.
+        if plan.stacked and not unit.continued:
+            slide_w, slide_h = self.layout.slide_size(unit, rect.width, plan.slide_max)
+            x0 = rect.x0 + (rect.width - slide_w) / 2
+            self.slide(page, pymupdf.Rect(x0, top, x0 + slide_w, top + slide_h))
+            top += slide_h + BLOCK_GAP
+        left_x, side_x = rect.x0, rect.x0 + left_w + COLUMN_GAP
 
         # Left column: explanation, then the tinted key-points box.
         y = top
@@ -514,42 +552,38 @@ class Renderer:
         points = unit.points_html(plan.points)
         if points:
             y = self.text_box(page, left_x, y, left_w, points, SAGE_TINT, scale=scale,
-                              accent=True)
+                              accent=True) + BLOCK_GAP
 
-        # Right column: the original slide as vector content, the review
-        # question, then the summary (balances the usually longer left column).
         summary = unit.summary_html()
         if unit.continued:
             if summary:
-                self.text_box(page, left_x, y + BLOCK_GAP, left_w, summary,
-                              SUMMARY_TINT, SAGE_BORDER)
-        else:
-            slide_w, slide_h = self.layout.slide_size(unit, right_w, rect.height,
-                                                      plan.slide_share)
-            slide = pymupdf.Rect(right_x, top, right_x + slide_w, top + slide_h)
-            page.show_pdf_page(slide, self.source, unit.source_page - 1, keep_proportion=True)
-            page.draw_rect(slide, color=_rgb(SAGE_BORDER), width=0.8)
-            y = slide.y1
-            review = unit.review_html()
-            if review:
-                y = self.text_box(page, right_x, y + BLOCK_GAP, right_w,
-                                  review, WHITE, SAGE_BORDER)
-            if summary:
-                self.text_box(page, right_x, y + BLOCK_GAP, right_w, summary,
-                              SUMMARY_TINT, SAGE_BORDER)
+                self.text_box(page, left_x, y, left_w, summary, SUMMARY_TINT, SAGE_BORDER)
+            return
+
+        # Side column: the slide (two per sheet), then review question and summary.
+        y = top
+        if not plan.stacked:
+            slide_w, slide_h = self.layout.slide_size(unit, side_w, plan.slide_max)
+            self.slide(page, pymupdf.Rect(side_x, y, side_x + slide_w, y + slide_h))
+            y += slide_h + BLOCK_GAP
+        for body, fill in ((unit.review_html(), WHITE), (summary, SUMMARY_TINT)):
+            if body:
+                y = self.text_box(page, side_x, y, side_w, body, fill, SAGE_BORDER) + BLOCK_GAP
 
     def page(self, out, plan, number, total):
         page = out.new_page(width=PAGE_W, height=PAGE_H)
         self.header(page, number, total)
-        if len(plan.units) == 1:
-            rects = [content_rect()]
-        else:
-            rects = half_rects()
-            mid = (rects[0].y1 + rects[1].y0) / 2
-            page.draw_line((rects[0].x0, mid), (rects[0].x1, mid), color=_rgb(SAGE_BORDER),
-                           width=0.6, dashes="[3 3] 0")
-        for rect, unit_plan in zip(rects, plan.units):
+        full = content_rect()
+        y = full.y0
+        for index, unit_plan in enumerate(plan.units):
+            if index:
+                mid = y + UNIT_GAP / 2
+                page.draw_line((full.x0, mid), (full.x1, mid), color=_rgb(SAGE_BORDER),
+                               width=0.6, dashes="[3 3] 0")
+                y += UNIT_GAP
+            rect = pymupdf.Rect(full.x0, y, full.x1, y + unit_plan.height)
             self.unit(page, rect, unit_plan)
+            y = rect.y1
 
 
 # --------------------------------------------------

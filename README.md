@@ -11,6 +11,9 @@ powered by Google Gemini.
   the original slide (kept as vector content), a review question and a summary.
   One or two slides per sheet. Long explanations continue on the next page and are
   never cut; a slide whose analysis fails keeps its place and can be retried alone.
+- **Two page layouts.** One slide per page puts the slide across the full page
+  width for easy reading; two per sheet places it beside the explanation and
+  packs units by their real height to save paper.
 - **AI Lecture Assistant.** A full study report (Arabic explanation, high-yield
   points, mind-map plans, MCQs) and a chat that answers from the lecture with page
   citations.
@@ -32,6 +35,7 @@ powered by Google Gemini.
 | `document_io.py` | Upload → PDF conversion and validation, preview rendering |
 | `note_templates/` | PDF templates; `__init__.py` registers them, `ai_cornell.py` is the current one |
 | `usage_limits.py` | Rate limits, daily budget, optional access code |
+| `support.py` | Support tickets emailed to the owner (address kept server-side) |
 | `static/fonts/` | Almarai (SIL Open Font License) for the PDF and the interface |
 | `static/previews/` | Template thumbnails (`scripts/make_template_previews.py`) |
 | `.streamlit/config.toml` | Production settings and theme (no secrets) |
@@ -87,6 +91,9 @@ lecture; choose **Standard** (2 GB) for many simultaneous users.
 | `DAILY_SLIDE_BUDGET` | 3000 | Slides analyzed per day, all users |
 | `MAX_AI_SLIDES` | 150 | Largest lecture accepted |
 | `APP_ACCESS_CODE` | — | If set, required before using AI |
+| `SUPPORT_EMAIL_TO` | — | Receives support tickets (never shown to visitors) |
+| `SMTP_USER` / `SMTP_PASSWORD` | — | Account and app password that send tickets |
+| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / 465 | Mail server (SSL) |
 
 ## Security
 
@@ -99,6 +106,9 @@ lecture; choose **Standard** (2 GB) for many simultaneous users.
 - Abuse limits protect the key's quota: per-visitor hourly limits (keyed on the
   address Render's proxy appends to `X-Forwarded-For`), a daily slide budget, a
   server-wide concurrency cap and an optional access code with attempt limiting.
+- Support tickets are sent by the server; the owner's address stays in server
+  settings and is never part of the page or the repository. Email header
+  injection is rejected and tickets are rate-limited per visitor.
 - Uploads are capped at 50 MB; encrypted, corrupt and oversized-image files are
   rejected; the container runs as a non-root user.
 - In Google AI Studio / Cloud Console, restrict the key to the Generative Language

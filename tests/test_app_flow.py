@@ -14,6 +14,7 @@ from unittest import mock
 from streamlit.testing.v1 import AppTest
 
 import ai_assistant
+import support
 import usage_limits
 from ai_assistant import AIError
 from tests.helpers import ROOT, SAMPLE_PDF
@@ -55,7 +56,7 @@ class AppFlowTest(unittest.TestCase):
                 app = self.start(lang, with_doc=False)
                 self.assertTrue(app.info)
                 self.assertFalse([b for b in app.button if b.key == "create_notes"])
-                self.assertEqual(len(app.tabs), 2)
+                self.assertEqual(len(app.tabs), 3)
 
     def test_language_switch(self):
         app = self.start("ar", with_doc=False)
@@ -104,7 +105,7 @@ class AppFlowTest(unittest.TestCase):
             app = self.start("en")
             app.button(key="create_notes").click().run()
         message = self.texts(app.error)
-        self.assertIn("Reference", message)
+        self.assertIn("reference", message)
         self.assertNotIn("internal detail", message)
 
     def test_rate_limit_message(self):
@@ -145,6 +146,38 @@ class AppFlowTest(unittest.TestCase):
             self.assertEqual(ask.call_count, 1)
             app.run()
             self.assertEqual(ask.call_count, 1)
+
+    # ---- Support ----
+    def test_support_ticket_flow_never_shows_recipient(self):
+        owner = "owner-secret@example.com"
+        with mock.patch.dict(os.environ, {"SUPPORT_EMAIL_TO": owner}), \
+                mock.patch.object(support, "send_ticket", return_value="AB12CD34") as send:
+            app = self.start("en")
+            app.text_input(key="support_email").input("student@uni.edu")
+            app.text_area(key="support_message").input("The download button does nothing.")
+            [b for b in app.button if "Send ticket" in b.label][0].click().run()
+            self.assertFalse(app.exception, app.exception)
+            self.assertEqual(send.call_count, 1)
+            self.assertIn("AB12CD34", self.texts(app.success))
+            page_text = " ".join(str(e.value) for kind in ("markdown", "caption", "success",
+                                                            "info", "error")
+                                 for e in getattr(app, kind))
+            self.assertNotIn(owner, page_text)
+
+    def test_support_rejects_invalid_email_before_sending(self):
+        with mock.patch.object(support, "send_ticket") as send:
+            app = self.start("en")
+            app.text_input(key="support_email").input("nope")
+            app.text_area(key="support_message").input("The download button does nothing.")
+            [b for b in app.button if "Send ticket" in b.label][0].click().run()
+        send.assert_not_called()
+        self.assertIn("valid email", self.texts(app.error))
+
+    def test_no_provider_name_in_interface(self):
+        for lang in ("ar", "en"):
+            app = self.start(lang, with_doc=False)
+            html = " ".join(str(getattr(e, "proto", "")) for e in app.get("html"))
+            self.assertNotIn("Gemini", html + self.texts(app.caption) + self.texts(app.markdown))
 
     # ---- Access code ----
     def test_access_code_gate(self):
