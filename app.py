@@ -8,12 +8,12 @@ the language never repeats AI work.
 
 import hashlib
 import logging
-import time
 import uuid
 
 import streamlit as st
 
 import ai_assistant
+import jobs
 import support
 import usage_limits
 from ai_assistant import AIError
@@ -219,9 +219,11 @@ def human_size(size):
 
 
 def human_duration(seconds):
+    seconds = max(1, round(seconds))
     if seconds < 60:
-        return T["seconds"].format(n=max(1, round(seconds)))
-    return T["minutes"].format(n=round(seconds / 60))
+        return T["seconds"].format(n=seconds)
+    minutes, rest = divmod(seconds, 60)
+    return T["min_sec"].format(m=minutes, s=rest) if rest else T["minutes"].format(n=minutes)
 
 
 def visitor():
@@ -311,6 +313,9 @@ if uploaded is not None:
                    "size": len(data)}
             st.session_state.doc = doc
             forget_other_files(sig)
+            old_job = st.session_state.pop("job", None)
+            if old_job is not None and old_job.running:
+                old_job.cancel()
         except DocumentError as exc:
             st.session_state.pop("doc", None)
             doc = None
@@ -359,39 +364,46 @@ def ai_allowed(place):
 # --------------------------------------------------
 # Tab: PDF notes
 # --------------------------------------------------
-def run_slide_analysis(pages=None):
-    """Analyze all slides (or just `pages`) and store the notes for this file."""
-    count = len(pages) if pages else doc["pages"]
+def current_job():
+    """The session's slide-analysis job for the current file, if any."""
+    job = st.session_state.get("job")
+    return job if job is not None and doc is not None and job.sig == doc["sig"] else None
+
+
+def start_analysis(pages=None):
+    """Start analyzing all slides (or just `pages`) on a background thread."""
+    pages = list(pages) if pages else list(range(1, doc["pages"] + 1))
     try:
-        limiter.start_ai_job(visitor(), slides=count)
+        limiter.start_ai_job(visitor(), slides=len(pages))
     except LimitExceeded as exc:
-        show_limit(exc, pages=count)
+        show_limit(exc, pages=len(pages))
         return
-    bar = st.progress(0.0, text=T["analyzing"].format(done=0, total=count))
-    started = time.monotonic()
-
-    def progress(done, total):
-        elapsed = time.monotonic() - started
-        text = (T["analyzing_eta"].format(done=done, total=total,
-                                          eta=human_duration(elapsed / done * (total - done)))
-                if 0 < done < total else T["analyzing"].format(done=done, total=total))
-        bar.progress(done / total, text=text)
-
     try:
-        notes = ai_assistant.analyze_pages(doc["pdf"], pages=pages, progress=progress)
-    except AIError as exc:
-        limiter.refund_slides(count)
-        bar.empty()
-        show_error(exc.kind)
+        st.session_state.job = jobs.start_job(doc["pdf"], doc["sig"], pages,
+                                              retry=len(pages) < doc["pages"])
+    except jobs.ServerBusy:
+        limiter.refund_slides(len(pages))
+        show_error("server_busy")
         return
-    except Exception as exc:  # noqa: BLE001
-        bar.empty()
-        show_unexpected(exc, "Slide analysis")
-        return
-    logger.info("Analyzed %d slides in %.0fs", count, time.monotonic() - started)
+    st.session_state.pop("job_summary", None)
+    st.session_state.pop("job_error", None)
+    st.rerun()
 
+
+def absorb_finished_job(job):
+    """Merge a finished job into the session's notes, once (script thread)."""
+    if job.running or job.consumed:
+        return
+    job.consumed = True
+    if job.status == "failed":
+        limiter.refund_slides(job.total)
+        st.session_state.job_error = (job.error_kind, job.error_ref)
+        return
+    notes = job.notes
+    not_sent = sum(1 for note in notes if note.get("error") == "cancelled")
+    limiter.refund_slides(not_sent)
     store = cache("notes")
-    if pages and doc["sig"] in store:
+    if job.retry and doc["sig"] in store:
         by_page = {note["source_page"]: note for note in store[doc["sig"]]}
         by_page.update({note["source_page"]: note for note in notes})
         notes = [by_page[number] for number in sorted(by_page)]
@@ -399,7 +411,63 @@ def run_slide_analysis(pages=None):
     pdfs = cache("pdfs")
     for key in [k for k in pdfs if k[0] == doc["sig"]]:
         del pdfs[key]
-    st.rerun()
+    # Counted from this job's own results, not from the merged notes.
+    errors = [note.get("error") for note in job.notes]
+    st.session_state.job_summary = {
+        "sig": job.sig, "total": job.total, "ok": errors.count(None),
+        "failed": sum(1 for e in errors if e and e != "cancelled"),
+        "time": job.elapsed(), "cancelled": job.status == "cancelled",
+    }
+
+
+@st.fragment(run_every=1.0)
+def job_progress():
+    """Live progress; reruns itself every second without blocking the page."""
+    job = current_job()
+    if job is None or not job.running:
+        st.rerun()  # whole page, to show the finished result
+    state = job.snapshot()
+    done, total = state["done"], state["total"]
+    st.progress(done / total if total else 0.0,
+                text=T["job_progress"].format(done=done, total=total))
+    if state["in_flight"]:
+        st.caption(T["job_current"].format(pages="، ".join(map(str, state["in_flight"]))
+                                           if rtl else ", ".join(map(str, state["in_flight"]))))
+    elif done == 0:
+        st.caption(T["job_starting"])
+    eta = job.eta()
+    elapsed = human_duration(job.elapsed())
+    st.caption(T["job_time"].format(elapsed=elapsed, eta=human_duration(eta))
+               if eta is not None else T["job_time_no_eta"].format(elapsed=elapsed))
+    if state["failed"]:
+        st.caption(T["job_failed_so_far"].format(n=state["failed"]))
+    if job.cancel_event.is_set():
+        st.info(T["job_cancelling"], icon="⏳")
+    else:
+        st.caption(T["job_free_to_move"])
+        if st.button(T["job_cancel"], key="cancel_job", icon="⏹️"):
+            job.cancel()  # takes effect at once; the next tick shows "stopping"
+
+
+def show_job_summary(notes):
+    summary = st.session_state.get("job_summary")
+    failed = [n["source_page"] for n in notes if n.get("error") and n["error"] != "cancelled"]
+    not_sent = [n["source_page"] for n in notes if n.get("error") == "cancelled"]
+    if summary and summary["sig"] == doc["sig"]:
+        text = T["job_summary"].format(ok=summary["ok"], total=summary["total"],
+                                       time=human_duration(summary["time"]))
+        if summary["failed"]:
+            text += " " + T["job_summary_failed"].format(n=summary["failed"])
+        (st.warning if summary["failed"] else st.success)(text, icon="📊")
+    if not_sent:
+        st.info(T["job_cancelled"].format(n=len(not_sent)), icon="⏹️")
+        if st.button(T["continue_analysis"], key="continue_analysis", type="primary"):
+            start_analysis(pages=not_sent)
+    if failed:
+        st.warning(T["failed_slides"].format(n=len(failed), pages=", ".join(map(str, failed))),
+                   icon="⚠️")
+        if st.button(T["retry_failed"], key="retry_failed"):
+            start_analysis(pages=failed)
 
 
 def notes_pdf(template_key, per_sheet):
@@ -463,22 +531,27 @@ def notes_tab():
     if not ai_allowed("notes"):
         return
 
+    job = current_job()
+    if job is not None:
+        absorb_finished_job(job)
+        if job.running:
+            job_progress()
+            return
+    # Kept until the next analysis starts, so later reruns don't hide it.
+    error = st.session_state.get("job_error")
+    if error:
+        kind, ref = error
+        show_error(kind, ref=ref or "-")
+
     notes = cache("notes").get(doc["sig"])
     if notes is None:
         st.caption(T["create_hint"])
         if st.button(f"✨ {T['create_button']}", type="primary", width="stretch",
                      key="create_notes"):
-            run_slide_analysis()
+            start_analysis()
         return
 
-    failed = [n["source_page"] for n in notes if n.get("error")]
-    if failed:
-        st.warning(T["failed_slides"].format(n=len(failed), pages=", ".join(map(str, failed))),
-                   icon="⚠️")
-        if st.button(T["retry_failed"], key="retry_failed"):
-            run_slide_analysis(pages=failed)
-    else:
-        st.success(T["analysis_done"].format(n=len(notes)), icon="✅")
+    show_job_summary(notes)
 
     try:
         pdf_bytes = notes_pdf(template_key, per_sheet)

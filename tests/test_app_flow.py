@@ -7,6 +7,8 @@ in session state (see the `_test_document` note in app.py).
 
 import json
 import os
+import threading
+import time
 import tomllib
 import unittest
 from unittest import mock
@@ -49,6 +51,21 @@ class AppFlowTest(unittest.TestCase):
     def texts(self, elements):
         return " ".join(str(e.value) for e in elements)
 
+    def finish_job(self, app, timeout=10):
+        """Wait for the background job, then rerun so the page absorbs it."""
+        job = app.session_state["job"]
+        deadline = time.monotonic() + timeout
+        while job.running and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(job.running, "job did not finish")
+        app.run()
+        self.assertFalse(app.exception, app.exception)
+
+    def click_and_finish(self, app, key):
+        app.button(key=key).click().run()
+        self.assertFalse(app.exception, app.exception)
+        self.finish_job(app)
+
     # ---- Basic rendering ----
     def test_both_languages_render_without_document(self):
         for lang in ("ar", "en"):
@@ -69,7 +86,7 @@ class AppFlowTest(unittest.TestCase):
         with mock.patch.object(ai_assistant, "analyze_pages",
                                return_value=sample_notes()) as analyze:
             app = self.start()
-            app.button(key="create_notes").click().run()
+            self.click_and_finish(app, "create_notes")
             self.assertFalse(app.exception, app.exception)
             self.assertEqual(analyze.call_count, 1)
             self.assertIn("4", self.texts(app.success))
@@ -82,17 +99,17 @@ class AppFlowTest(unittest.TestCase):
     def test_default_layout_is_one_large_slide_per_page(self):
         with mock.patch.object(ai_assistant, "analyze_pages", return_value=sample_notes()):
             app = self.start()
-            app.button(key="create_notes").click().run()
+            self.click_and_finish(app, "create_notes")
         self.assertEqual([key[2] for key in app.session_state["pdfs"]], [1])
 
     def test_failed_slides_can_be_retried_alone(self):
         with mock.patch.object(ai_assistant, "analyze_pages",
                                return_value=sample_notes(failed={2})) as analyze:
             app = self.start()
-            app.button(key="create_notes").click().run()
+            self.click_and_finish(app, "create_notes")
             self.assertIn("2", self.texts(app.warning))
             analyze.return_value = [note(2)]
-            app.button(key="retry_failed").click().run()
+            self.click_and_finish(app, "retry_failed")
             self.assertFalse(app.exception, app.exception)
             self.assertEqual(analyze.call_args.kwargs["pages"], [2])
             self.assertFalse(app.warning)
@@ -101,7 +118,7 @@ class AppFlowTest(unittest.TestCase):
         with mock.patch.object(ai_assistant, "analyze_pages",
                                side_effect=AIError("quota", "x")):
             app = self.start()
-            app.button(key="create_notes").click().run()
+            self.click_and_finish(app, "create_notes")
         self.assertFalse(app.exception)
         self.assertIn("مزدحمة", self.texts(app.error))
 
@@ -109,10 +126,51 @@ class AppFlowTest(unittest.TestCase):
         with mock.patch.object(ai_assistant, "analyze_pages",
                                side_effect=RuntimeError("internal detail")):
             app = self.start("en")
-            app.button(key="create_notes").click().run()
+            self.click_and_finish(app, "create_notes")
         message = self.texts(app.error)
         self.assertIn("reference", message)
         self.assertNotIn("internal detail", message)
+
+    def test_job_survives_language_switch_and_can_be_stopped(self):
+        release = threading.Event()
+        seen = {}
+
+        def slow_analysis(pdf, pages, cancel, **kwargs):
+            seen["cancel"] = cancel
+            release.wait(10)
+            done = [note(n) for n in pages[:1]]
+            return done + [ai_assistant.failed_note(n, "cancelled") for n in pages[1:]]
+
+        with mock.patch.object(ai_assistant, "analyze_pages", side_effect=slow_analysis):
+            app = self.start()
+            app.button(key="create_notes").click().run()
+            job = app.session_state["job"]
+            self.assertTrue(job.running)
+            self.assertTrue(app.get("progress"), "live progress is shown")
+            app.get("button_group")[0].set_value("en").run()      # language switch
+            self.assertIs(app.session_state["job"], job, "rerun keeps the same job")
+            self.assertTrue(job.running)
+            app.button(key="cancel_job").click().run()
+            self.assertTrue(seen["cancel"].is_set(), "Stop reaches the worker")
+            release.set()
+            self.finish_job(app)
+        self.assertEqual(job.status, "cancelled")
+        self.assertTrue([b for b in app.button if b.key == "continue_analysis"])
+        self.assertIn("3", self.texts(app.info))
+
+    def test_new_upload_stops_previous_job(self):
+        release = threading.Event()
+        with mock.patch.object(ai_assistant, "analyze_pages",
+                               side_effect=lambda *a, **k: release.wait(10) and []):
+            app = self.start()
+            app.button(key="create_notes").click().run()
+            job = app.session_state["job"]
+            other = sample_doc() | {"sig": "another-file"}
+            app.session_state["doc"] = other
+            app.run()
+            # The page no longer shows the old job's progress for the new file.
+            self.assertFalse([b for b in app.button if b.key == "cancel_job"])
+            release.set()
 
     def test_rate_limit_message(self):
         with mock.patch.object(usage_limits, "AI_RUNS_PER_HOUR", 0), \
