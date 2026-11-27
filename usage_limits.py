@@ -6,7 +6,7 @@ environment variables:
     AI_RUNS_PER_HOUR      AI jobs (notes or assistant report) per visitor/hour   (10)
     CHAT_MESSAGES_PER_HOUR assistant chat questions per visitor/hour            (60)
     DAILY_SLIDE_BUDGET    slides analyzed per day across all visitors          (3000)
-    MAX_AI_SLIDES         slides allowed in one lecture                        (150)
+    MAX_AI_SLIDES         slides allowed in one lecture                        (120)
     APP_ACCESS_CODE       if set, visitors must enter this code to use AI
 """
 
@@ -28,7 +28,8 @@ def _int_env(name, default):
 AI_RUNS_PER_HOUR = _int_env("AI_RUNS_PER_HOUR", 10)
 CHAT_MESSAGES_PER_HOUR = _int_env("CHAT_MESSAGES_PER_HOUR", 60)
 DAILY_SLIDE_BUDGET = _int_env("DAILY_SLIDE_BUDGET", 3000)
-MAX_AI_SLIDES = _int_env("MAX_AI_SLIDES", 150)
+# 120 keeps the PDF build of the largest lecture well inside 512 MB.
+MAX_AI_SLIDES = _int_env("MAX_AI_SLIDES", 120)
 ACCESS_ATTEMPTS_PER_HOUR = 10   # wrong access codes allowed per visitor
 SUPPORT_TICKETS_PER_HOUR = 5    # support tickets per visitor
 

@@ -4,7 +4,7 @@ import os
 import random
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import httpx
 import pymupdf
@@ -21,8 +21,11 @@ MAX_INPUT_CHARS = 500_000
 
 # Slides analyzed at the same time for one lecture, and Gemini requests in
 # flight across all users of this server (protects the API key's quota).
-SLIDE_WORKERS = int(os.environ.get("GEMINI_SLIDE_WORKERS", "8"))
-SERVER_MAX_CONCURRENT = int(os.environ.get("GEMINI_MAX_CONCURRENT", "12"))
+# Defaults suit Render's free plan (512 MB, a fraction of one CPU): requests
+# are network-bound, so 6 keep a lecture moving while each in-flight slide
+# holds only one compressed image; 10 server-wide covers two lectures at once.
+SLIDE_WORKERS = int(os.environ.get("GEMINI_SLIDE_WORKERS", "6"))
+SERVER_MAX_CONCURRENT = int(os.environ.get("GEMINI_MAX_CONCURRENT", "10"))
 MAX_ATTEMPTS = 4
 REQUEST_TIMEOUT_MS = 300_000
 SLIDE_IMAGE_ZOOM = 1.5
@@ -142,9 +145,15 @@ def _call_gemini(client, **kwargs):
         return client.models.generate_content(**kwargs)
 
 
-def _with_retries(func, what):
-    """Run func(), retrying transient failures with exponential backoff."""
+def _with_retries(func, what, cancel=None):
+    """Run func(), retrying transient failures with exponential backoff.
+
+    cancel: optional threading.Event; once set, no further attempt is made and
+    a pending back-off wait ends at once (raises AIError "cancelled").
+    """
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if cancel is not None and cancel.is_set():
+            raise AIError("cancelled", f"{what} cancelled.")
         try:
             return func()
         except Exception as exc:  # noqa: BLE001 - classified below
@@ -153,7 +162,13 @@ def _with_retries(func, what):
                            redact(exc))
             if kind not in RETRYABLE or attempt == MAX_ATTEMPTS:
                 raise AIError(kind, f"{what} failed ({kind}).") from exc
-            time.sleep(min(30, 2 ** attempt) + random.uniform(0, 1))
+            delay = min(30, 2 ** attempt) + random.uniform(0, 1)
+            if cancel is not None:
+                if cancel.wait(delay):
+                    raise AIError("cancelled", f"{what} cancelled.") from exc
+            else:
+                time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def extract_pdf_text(pdf_bytes):
@@ -286,24 +301,17 @@ Extracted slide text:
 """
 
 
-def _prepare_slides(pdf_bytes, page_numbers):
-    """Text and a JPEG image for each requested page (1-based).
+def _prepare_slide(document, number):
+    """Text and a JPEG image of one page (1-based).
 
-    Done up front on one thread because PyMuPDF is not thread-safe.
+    Called on one thread only, because PyMuPDF is not thread-safe; slides are
+    prepared just before they are sent, so only a few images exist at a time.
     """
-    slides = {}
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
-        for number in page_numbers:
-            page = document[number - 1]
-            pixmap = page.get_pixmap(
-                matrix=pymupdf.Matrix(SLIDE_IMAGE_ZOOM, SLIDE_IMAGE_ZOOM),
-                alpha=False,
-            )
-            slides[number] = (
-                page.get_text("text").strip(),
-                pixmap.tobytes("jpeg", jpg_quality=85),
-            )
-    return slides
+    page = document[number - 1]
+    pixmap = page.get_pixmap(
+        matrix=pymupdf.Matrix(SLIDE_IMAGE_ZOOM, SLIDE_IMAGE_ZOOM), alpha=False,
+    )
+    return page.get_text("text").strip(), pixmap.tobytes("jpeg", jpg_quality=85)
 
 
 def _parse_slide_json(raw, page_number):
@@ -334,7 +342,7 @@ def _parse_slide_json(raw, page_number):
     }
 
 
-def _analyze_slide(client, page_number, slide_text, image_bytes):
+def _analyze_slide(client, page_number, slide_text, image_bytes, cancel=None):
     prompt = SLIDE_PROMPT.format(
         slide_text=slide_text[:12000] if slide_text
         else "[No selectable text found; analyze the slide image.]"
@@ -352,7 +360,7 @@ def _analyze_slide(client, page_number, slide_text, image_bytes):
         )
         return _parse_slide_json(response.text, page_number)
 
-    return _with_retries(request, f"Slide {page_number}")
+    return _with_retries(request, f"Slide {page_number}", cancel)
 
 
 def failed_note(page_number, kind):
@@ -369,7 +377,8 @@ def failed_note(page_number, kind):
 
 
 def analyze_pages(pdf_bytes, max_pages=None, pages=None, progress=None,
-                  workers=SLIDE_WORKERS):
+                  workers=SLIDE_WORKERS, cancel=None, on_slide_start=None,
+                  on_slide_done=None):
     """
     Analyze PDF pages with Gemini, several at a time.
 
@@ -380,47 +389,71 @@ def analyze_pages(pdf_bytes, max_pages=None, pages=None, progress=None,
 
     pages: 1-based page numbers to analyze (default: all, or the first
         max_pages).
-    progress: optional callback(done, total) called on the caller's thread
-        after each page finishes.
+    progress: optional callback(done, total) after each page finishes.
+    cancel: optional threading.Event. Once set, no new request is sent and
+        retry waits end; requests already in flight finish and keep their
+        results; pages never sent come back as failed_note(..., "cancelled").
+    on_slide_start: optional callback(page_number) when a page is sent.
+    on_slide_done: optional callback(page_number, note) when a page finishes.
 
     Raises AIError at once for failures that would hit every page
     (missing or invalid key, unknown model).
     """
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
         page_count = document.page_count
-    if pages is None:
-        limit = page_count if max_pages is None else min(page_count, max_pages)
-        pages = list(range(1, limit + 1))
-    pages = sorted(set(pages))
-    if any(not 1 <= number <= page_count for number in pages):
-        raise ValueError("Requested page is outside the document.")
+        if pages is None:
+            limit = page_count if max_pages is None else min(page_count, max_pages)
+            pages = list(range(1, limit + 1))
+        pages = sorted(set(pages))
+        if any(not 1 <= number <= page_count for number in pages):
+            raise ValueError("Requested page is outside the document.")
 
-    client = get_gemini_client()
-    slides = _prepare_slides(pdf_bytes, pages)
-    results = {}
+        client = get_gemini_client()
+        workers = max(1, workers)
+        results = {}
+        queue = iter(pages)
+        in_flight = {}
+        fatal = None
 
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {
-            pool.submit(_analyze_slide, client, number, *slides[number]): number
-            for number in pages
-        }
-        try:
-            for future in as_completed(futures):
-                number = futures[future]
-                try:
-                    results[number] = future.result()
-                except AIError as exc:
-                    if exc.kind in FATAL:
-                        raise
-                    results[number] = failed_note(number, exc.kind)
-                if progress:
-                    progress(len(results), len(pages))
-        except AIError:
-            for future in futures:
-                future.cancel()
-            raise
+        def cancelled():
+            return fatal is not None or (cancel is not None and cancel.is_set())
 
-    return [results[number] for number in pages]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            def submit_next():
+                if cancelled():
+                    return
+                number = next(queue, None)
+                if number is None:
+                    return
+                text, image = _prepare_slide(document, number)
+                in_flight[pool.submit(_analyze_slide, client, number, text, image,
+                                      cancel)] = number
+                if on_slide_start:
+                    on_slide_start(number)
+
+            for _ in range(workers):
+                submit_next()
+            # Keep at most `workers` slides in flight: each finished one makes
+            # room for the next, so images never pile up in memory.
+            while in_flight:
+                finished, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    number = in_flight.pop(future)
+                    try:
+                        results[number] = future.result()
+                    except AIError as exc:
+                        if exc.kind in FATAL and fatal is None:
+                            fatal = exc
+                        results[number] = failed_note(number, exc.kind)
+                    if on_slide_done:
+                        on_slide_done(number, results[number])
+                    if progress:
+                        progress(len(results), len(pages))
+                    submit_next()
+
+    if fatal is not None:
+        raise fatal
+    return [results.get(number) or failed_note(number, "cancelled") for number in pages]
 
 
 # --------------------------------------------------

@@ -74,9 +74,26 @@ The repository includes a `Dockerfile` and a `render.yaml` Blueprint.
 3. In the service's **Environment** settings, add `GEMINI_API_KEY`. Never commit it.
 4. Optional: set `APP_ACCESS_CODE` to require a code before AI features are used.
 
-Plan: the free plan sleeps when idle; use at least **Starter**. In our
-measurements one server stays around 250–350 MB while handling a 38-slide
-lecture; choose **Standard** (2 GB) for many simultaneous users.
+### Limits on the free plan
+
+The defaults are sized for Render's free plan (512 MB RAM, a fraction of one
+CPU, sleeps after ~15 minutes idle, so the first visit can take 30–60 s):
+
+- **6 slides in flight per lecture** (`GEMINI_SLIDE_WORKERS`). Requests wait on
+  the network, not the CPU; each in-flight slide holds one compressed image, and
+  images are prepared just before sending, so memory stays flat.
+- **10 Gemini requests server-wide** (`GEMINI_MAX_CONCURRENT`) and **2 lectures
+  analyzed at once** (`MAX_ACTIVE_JOBS`); a third visitor is asked to retry in a
+  minute instead of pushing the instance out of memory.
+- **120 slides per lecture** (`MAX_AI_SLIDES`) and 50 MB per upload: the PDF of
+  the largest lecture builds well inside the memory limit.
+
+Measured with a real 70-slide lecture: analysis ~2.5 minutes, server peak about
+300 MB. On a paid plan raise the first three values (e.g. 8 / 12 / 4).
+
+Generation runs on a background thread: switching tabs or language does not
+interrupt it, and **Stop analysis** sends no further requests (slides already
+in progress finish and are kept).
 
 ### Settings (environment variables)
 
@@ -84,12 +101,13 @@ lecture; choose **Standard** (2 GB) for many simultaneous users.
 |---|---|---|
 | `GEMINI_API_KEY` | — | Required. Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Model name |
-| `GEMINI_SLIDE_WORKERS` | 8 | Slides analyzed at once for one lecture |
-| `GEMINI_MAX_CONCURRENT` | 12 | Gemini requests in flight across all users |
+| `GEMINI_SLIDE_WORKERS` | 6 | Slides analyzed at once for one lecture |
+| `GEMINI_MAX_CONCURRENT` | 10 | Gemini requests in flight across all users |
+| `MAX_ACTIVE_JOBS` | 2 | Lectures analyzed at once, all users |
 | `AI_RUNS_PER_HOUR` | 10 | AI jobs per visitor per hour |
 | `CHAT_MESSAGES_PER_HOUR` | 60 | Chat questions per visitor per hour |
 | `DAILY_SLIDE_BUDGET` | 3000 | Slides analyzed per day, all users |
-| `MAX_AI_SLIDES` | 150 | Largest lecture accepted |
+| `MAX_AI_SLIDES` | 120 | Largest lecture accepted |
 | `APP_ACCESS_CODE` | — | If set, required before using AI |
 | `SUPPORT_EMAIL_TO` | — | Receives support tickets (never shown to visitors) |
 | `SMTP_USER` / `SMTP_PASSWORD` | — | Account and app password that send tickets |

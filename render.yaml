@@ -3,7 +3,7 @@ services:
   - type: web
     name: cornell-notes-maker
     runtime: docker
-    plan: starter          # always on; the free plan sleeps when idle. Use "standard" (2 GB) for many users
+    plan: free             # 512 MB; sleeps when idle. Limits below are sized for it
     healthCheckPath: /_stcore/health
     autoDeploy: true
     envVars:
@@ -12,9 +12,11 @@ services:
       - key: GEMINI_MODEL
         value: gemini-3.8-flash
       - key: GEMINI_SLIDE_WORKERS
-        value: "8"
+        value: "6"
       - key: GEMINI_MAX_CONCURRENT
-        value: "12"
+        value: "10"
+      - key: MAX_ACTIVE_JOBS
+        value: "2"
       - key: AI_RUNS_PER_HOUR
         value: "10"
       - key: CHAT_MESSAGES_PER_HOUR
@@ -22,7 +24,7 @@ services:
       - key: DAILY_SLIDE_BUDGET
         value: "3000"
       - key: MAX_AI_SLIDES
-        value: "150"
+        value: "120"
       - key: APP_ACCESS_CODE
         sync: false        # optional: set to require a code for AI features
       - key: SUPPORT_EMAIL_TO
