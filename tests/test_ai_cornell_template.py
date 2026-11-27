@@ -5,6 +5,7 @@ Rendered pages should also be checked by eye after layout changes:
 """
 
 import unittest
+from unittest import mock
 
 import pymupdf
 
@@ -184,6 +185,27 @@ class EscapeTest(unittest.TestCase):
             {"source_page": 3, "error": "quota", "title": "", "explanation_ar": "",
              "key_points": []})
         self.assertEqual(unit.sentences, [ai_cornell.LABELS["failed"]])
+
+
+class DrawFallbackTest(unittest.TestCase):
+    """If a box ever measures too small, its text is shrunk, never dropped."""
+
+    def draw_with_box(self, box_height):
+        typesetter = ai_cornell.Typesetter()
+        body = ai_cornell._para("الموافقة المستنيرة (Informed Consent) " * 12)
+        page = pymupdf.open().new_page()
+        with mock.patch.object(typesetter, "measure",
+                               lambda b, w, s=1.0: (box_height, box_height)), \
+                self.assertLogs(ai_cornell.logger, "WARNING"):
+            typesetter.draw(page, 30, 30, 220, body)
+        return page.get_text()
+
+    def test_slightly_small_box_shrinks_text(self):
+        self.assertIn("Informed", self.draw_with_box(120))
+
+    def test_far_too_small_box_still_draws_all_text(self):
+        text = self.draw_with_box(5)
+        self.assertEqual(text.count("Informed"), 12)
 
 
 class RegistryTest(unittest.TestCase):

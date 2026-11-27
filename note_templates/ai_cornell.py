@@ -22,12 +22,15 @@ algorithm, so Arabic sentences with English terms keep the correct order.
 """
 
 import html
+import logging
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
 import pymupdf
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------
 # Page geometry (points) and brand
@@ -283,8 +286,27 @@ class Typesetter:
         rect = pymupdf.Rect(x0, y0, x0 + width, y0 + layout_h)
         spare, _ = page.insert_htmlbox(rect, body, css=css(scale), archive=self.archive,
                                        scale_low=1)
-        if spare < 0:  # Measurement and drawing use the same engine; never expected.
-            raise RuntimeError(f"Text did not fit its box on page {page.number + 1}.")
+        if spare >= 0:
+            return
+        # Measurement and drawing use the same engine, so this is not expected;
+        # it was seen once on a live server and could not be reproduced. Rather
+        # than fail the whole PDF, let this one box shrink its text to fit.
+        # Only sizes are logged: lecture text never goes to the logs.
+        # insert_htmlbox draws nothing when text does not fit, so each fallback
+        # must succeed before we stop: first shrink within the box, then let the
+        # box run to the page bottom. Visible text beats lost text.
+        for fallback, scale_low in ((rect, 0.7),
+                                    (pymupdf.Rect(rect.x0, rect.y0, rect.x1,
+                                                  max(rect.y1, page.rect.y1 - 4)), 0.5)):
+            spare, used_scale = page.insert_htmlbox(fallback, body, css=css(scale),
+                                                    archive=self.archive,
+                                                    scale_low=scale_low)
+            if spare >= 0:
+                logger.warning("Text box %.0fx%.0f pt at scale %s did not fit; drawn at "
+                               "%.2f in a %.0f pt box.", width, layout_h, scale, used_scale,
+                               fallback.height)
+                return
+        raise RuntimeError(f"Text did not fit even after shrinking ({width:.0f} pt wide).")
 
 
 # --------------------------------------------------
