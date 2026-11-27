@@ -11,6 +11,8 @@ import pymupdf
 from google import genai
 from google.genai import errors as genai_errors
 
+from mupdf_guard import LOCK, open_document, serialized
+
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +173,7 @@ def _with_retries(func, what, cancel=None):
     raise AssertionError("unreachable")
 
 
+@serialized
 def extract_pdf_text(pdf_bytes):
     """Extract selectable text from a PDF while preserving page numbers."""
     pages = []
@@ -301,6 +304,7 @@ Extracted slide text:
 """
 
 
+@serialized
 def _prepare_slide(document, number):
     """Text and a JPEG image of one page (1-based).
 
@@ -399,8 +403,11 @@ def analyze_pages(pdf_bytes, max_pages=None, pages=None, progress=None,
     Raises AIError at once for failures that would hit every page
     (missing or invalid key, unknown model).
     """
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
-        page_count = document.page_count
+    # The document stays open for the whole job, but MuPDF is only touched in
+    # short locked calls, so other visitors' PDF work is never held up.
+    with open_document(stream=pdf_bytes, filetype="pdf") as document:
+        with LOCK:
+            page_count = document.page_count
         if pages is None:
             limit = page_count if max_pages is None else min(page_count, max_pages)
             pages = list(range(1, limit + 1))

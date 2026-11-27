@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pymupdf
 
+from mupdf_guard import serialized
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------
@@ -246,6 +248,9 @@ class Typesetter:
     def __init__(self):
         self.archive = _archive()
         self._cache = {}
+        # Where drawing happens (slide, page, layout); the renderer keeps it
+        # current so a fit failure can be traced from the logs.
+        self.context = {}
 
     def close(self):
         self._cache.clear()
@@ -273,13 +278,20 @@ class Typesetter:
                 page.insert_htmlbox(pymupdf.Rect(0, 0, width, layout_h), body,
                                     css=css(scale), archive=self.archive, scale_low=1)
                 bottoms = [b[3] for b in page.get_text("blocks")]
-            self._cache[key] = (layout_h, max(bottoms) if bottoms else 0.0)
+            visible_h = max(bottoms) if bottoms else 0.0
+            if visible_h <= 0 and re.sub(r"<[^>]+>", "", body).strip():
+                # Text that measures as nothing was the symptom of unserialized
+                # MuPDF use; never trust it: reserve the full layout height.
+                logger.warning("Text measured as 0 pt (%d chars, %.0f pt wide); using "
+                               "layout height %.0f pt.", len(body), width, layout_h)
+                visible_h = layout_h
+            self._cache[key] = (layout_h, visible_h)
         return self._cache[key]
 
     def height(self, body, width, scale=1.0):
         return self.measure(body, width, scale)[1]
 
-    def draw(self, page, x0, y0, width, body, scale=1.0):
+    def draw(self, page, x0, y0, width, body, scale=1.0, kind="text"):
         if not body:
             return
         layout_h, _ = self.measure(body, width, scale)
@@ -295,18 +307,27 @@ class Typesetter:
         # insert_htmlbox draws nothing when text does not fit, so each fallback
         # must succeed before we stop: first shrink within the box, then let the
         # box run to the page bottom. Visible text beats lost text.
-        for fallback, scale_low in ((rect, 0.7),
-                                    (pymupdf.Rect(rect.x0, rect.y0, rect.x1,
-                                                  max(rect.y1, page.rect.y1 - 4)), 0.5)):
+        visible_h = self.measure(body, width, scale)[1]
+        chars = len(_clean(html.unescape(re.sub(r"<[^>]+>", " ", body))))
+        for stage, fallback, scale_low in (
+                ("shrink", rect, 0.7),
+                ("extend", pymupdf.Rect(rect.x0, rect.y0, rect.x1,
+                                        max(rect.y1, page.rect.y1 - 4)), 0.5)):
             spare, used_scale = page.insert_htmlbox(fallback, body, css=css(scale),
                                                     archive=self.archive,
                                                     scale_low=scale_low)
             if spare >= 0:
-                logger.warning("Text box %.0fx%.0f pt at scale %s did not fit; drawn at "
-                               "%.2f in a %.0f pt box.", width, layout_h, scale, used_scale,
-                               fallback.height)
+                # Numbers only; lecture text never goes to the logs.
+                logger.warning(
+                    "PDF text-fit fallback: slide=%s page=%s layout=%s box=%s chars=%d "
+                    "font=%.1fpt box=%.0fx%.0fpt measured_visible=%.0fpt stage=%s "
+                    "shrink=%.2f y0=%.0f page_h=%.0f",
+                    self.context.get("slide", "-"), self.context.get("page", "-"),
+                    self.context.get("layout", "-"), kind, chars, 9.6 * scale, width,
+                    layout_h, visible_h, stage, used_scale, y0, page.rect.height)
                 return
-        raise RuntimeError(f"Text did not fit even after shrinking ({width:.0f} pt wide).")
+        raise RuntimeError(f"Text did not fit even after shrinking ({kind}, slide "
+                           f"{self.context.get('slide', '-')}).")
 
 
 # --------------------------------------------------
@@ -512,9 +533,10 @@ class Renderer:
         # Long titles are shown smaller rather than wrapping into the content.
         scale = next((s for s in (1.0, 0.9, 0.8, 0.7)
                       if self.ts.height(title_html, width, s) <= HEADER_H - 12), 0.7)
-        self.ts.draw(page, title_x, MARGIN_TOP, width, title_html, scale)
+        self.ts.draw(page, title_x, MARGIN_TOP, width, title_html, scale, kind="header")
         self.ts.draw(page, number_x, MARGIN_TOP, number_w,
-                     f'<div class="header" style="text-align:{align}">{number} / {total}</div>')
+                     f'<div class="header" style="text-align:{align}">{number} / {total}</div>',
+                     kind="page_number")
         y = MARGIN_TOP + HEADER_H - 8
         page.draw_line((MARGIN_X, y), (PAGE_W - MARGIN_X, y), color=_rgb(SAGE), width=1.2)
 
@@ -525,7 +547,7 @@ class Renderer:
         badge_html = f'<div class="badge">{unit.source_page}</div>'
         badge_h = self.ts.height(badge_html, badge.width)
         self.ts.draw(page, badge.x0, badge.y0 + (badge.height - badge_h) / 2 - 1,
-                     badge.width, badge_html)
+                     badge.width, badge_html, kind="badge")
         title = unit.title + (f" ({LABELS['continued']})" if unit.continued else "")
         title_html = f'<div class="title" dir="ltr">{_escape(title)}</div>'
         width = rect.x1 - badge.x1 - 8
@@ -533,17 +555,19 @@ class Renderer:
                       if self.ts.height(title_html, width, s) <= TITLE_H - 4), 0.7)
         title_h = self.ts.height(title_html, width, scale)
         self.ts.draw(page, badge.x1 + 8, badge.y0 + (badge.height - title_h) / 2 - 1,
-                     width, title_html, scale)
+                     width, title_html, scale, kind="title")
         page.draw_line((rect.x0, bar_bottom), (rect.x1, bar_bottom),
                        color=_rgb(SAGE_BORDER), width=0.6)
 
-    def text_box(self, page, x0, y0, width, body, fill, border=None, scale=1.0, accent=False):
+    def text_box(self, page, x0, y0, width, body, fill, border=None, scale=1.0, accent=False,
+                 kind="box"):
         h = self.layout.box_height(body, width, scale)
         box = pymupdf.Rect(x0, y0, x0 + width, y0 + h)
         _box(page, box, fill, border)
         if accent:  # Sage bar on the reading-start (right) edge.
             page.draw_line((box.x1, box.y0 + 1), (box.x1, box.y1 - 1), color=_rgb(SAGE), width=2.4)
-        self.ts.draw(page, x0 + BOX_PAD, y0 + BOX_PAD, width - 2 * BOX_PAD, body, scale)
+        self.ts.draw(page, x0 + BOX_PAD, y0 + BOX_PAD, width - 2 * BOX_PAD, body, scale,
+                     kind=kind)
         return box.y1
 
     def slide(self, page, rect):
@@ -553,6 +577,9 @@ class Renderer:
     def unit(self, page, rect, plan):
         unit, scale = plan.unit, plan.scale
         self.current_slide = unit.source_page
+        self.ts.context.update(slide=unit.source_page,
+                               layout=("stacked" if plan.stacked else "compact")
+                               + ("+continued" if unit.continued else ""))
         self.title_bar(page, rect, unit)
         left_w, side_w = column_widths(rect.width, unit, plan.stacked)
         top = rect.y0 + TITLE_H + BLOCK_GAP
@@ -569,17 +596,18 @@ class Renderer:
         y = top
         explanation = unit.explanation_html(plan.sentences)
         if explanation:
-            self.ts.draw(page, left_x, y, left_w, explanation, scale)
+            self.ts.draw(page, left_x, y, left_w, explanation, scale, kind="explanation")
             y += self.ts.height(explanation, left_w, scale) + BLOCK_GAP
         points = unit.points_html(plan.points)
         if points:
             y = self.text_box(page, left_x, y, left_w, points, SAGE_TINT, scale=scale,
-                              accent=True) + BLOCK_GAP
+                              accent=True, kind="key_points") + BLOCK_GAP
 
         summary = unit.summary_html()
         if unit.continued:
             if summary:
-                self.text_box(page, left_x, y, left_w, summary, SUMMARY_TINT, SAGE_BORDER)
+                self.text_box(page, left_x, y, left_w, summary, SUMMARY_TINT, SAGE_BORDER,
+                              kind="summary")
             return
 
         # Side column: the slide (two per sheet), then review question and summary.
@@ -588,12 +616,15 @@ class Renderer:
             slide_w, slide_h = self.layout.slide_size(unit, side_w, plan.slide_max)
             self.slide(page, pymupdf.Rect(side_x, y, side_x + slide_w, y + slide_h))
             y += slide_h + BLOCK_GAP
-        for body, fill in ((unit.review_html(), WHITE), (summary, SUMMARY_TINT)):
+        for body, fill, kind in ((unit.review_html(), WHITE, "review"),
+                                 (summary, SUMMARY_TINT, "summary")):
             if body:
-                y = self.text_box(page, side_x, y, side_w, body, fill, SAGE_BORDER) + BLOCK_GAP
+                y = self.text_box(page, side_x, y, side_w, body, fill, SAGE_BORDER,
+                                  kind=kind) + BLOCK_GAP
 
     def page(self, out, plan, number, total):
         page = out.new_page(width=PAGE_W, height=PAGE_H)
+        self.ts.context = {"page": number}
         self.header(page, number, total)
         full = content_rect()
         y = full.y0
@@ -611,6 +642,7 @@ class Renderer:
 # --------------------------------------------------
 # Public entry point
 # --------------------------------------------------
+@serialized
 def build_pdf(source_pdf_bytes, page_notes, pages_per_sheet=1, lecture_title=""):
     """Create the AI Cornell notes PDF.
 

@@ -207,6 +207,20 @@ class DrawFallbackTest(unittest.TestCase):
         text = self.draw_with_box(5)
         self.assertEqual(text.count("Informed"), 12)
 
+    def test_fallback_log_has_details_but_no_lecture_text(self):
+        typesetter = ai_cornell.Typesetter()
+        typesetter.context = {"slide": 7, "page": 3, "layout": "stacked"}
+        body = ai_cornell._para("الموافقة المستنيرة (Informed Consent) " * 12)
+        page = pymupdf.open().new_page()
+        with mock.patch.object(typesetter, "measure", lambda b, w, s=1.0: (120, 120)), \
+                self.assertLogs(ai_cornell.logger, "WARNING") as logs:
+            typesetter.draw(page, 30, 30, 220, body, kind="review")
+        line = logs.output[0]
+        for detail in ("slide=7", "page=3", "layout=stacked", "box=review", "chars=",
+                       "font=9.6pt", "stage=shrink", "shrink="):
+            self.assertIn(detail, line)
+        self.assertNotIn("Informed", line)
+
 
 class RegistryTest(unittest.TestCase):
     def test_default_template_is_registered(self):

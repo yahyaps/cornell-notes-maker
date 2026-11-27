@@ -9,6 +9,9 @@ from pathlib import Path
 import pymupdf
 from PIL import Image
 
+from mupdf_guard import LOCK, serialized
+from PIL import Image
+
 
 # Only these variables reach LibreOffice. Streamlit copies secrets such as
 # GEMINI_API_KEY into os.environ, and a converter handling untrusted files
@@ -20,6 +23,21 @@ def _subprocess_env(home_dir):
     env = {key: os.environ[key] for key in _SAFE_ENV_KEYS if key in os.environ}
     env["HOME"] = str(home_dir)
     return env
+
+
+def _text_to_pdf(text):
+    pdf = pymupdf.open()
+    try:
+        pdf.new_page(width=595, height=842).insert_textbox(
+            pymupdf.Rect(45, 45, 550, 795),
+            text,
+            fontsize=10,
+            fontname="helv",
+            lineheight=1.4,
+        )
+        return pdf.tobytes(garbage=4, deflate=True)
+    finally:
+        pdf.close()
 
 
 def convert_to_pdf(uploaded_file):
@@ -39,18 +57,8 @@ def convert_to_pdf(uploaded_file):
 
     if filename.endswith(".txt"):
         text = file_bytes.decode("utf-8-sig", errors="replace")
-        pdf = pymupdf.open()
-        try:
-            pdf.new_page(width=595, height=842).insert_textbox(
-                pymupdf.Rect(45, 45, 550, 795),
-                text,
-                fontsize=10,
-                fontname="helv",
-                lineheight=1.4,
-            )
-            return pdf.tobytes(garbage=4, deflate=True)
-        finally:
-            pdf.close()
+        with LOCK:
+            return _text_to_pdf(text)
 
     office_extensions = (".docx", ".doc", ".pptx", ".ppt")
 
@@ -91,6 +99,7 @@ def convert_to_pdf(uploaded_file):
     )
 
 
+@serialized
 def render_pdf_page(pdf_bytes, page_number, zoom=1.35):
     """Render a PDF page to PNG for an in-app preview."""
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
@@ -140,7 +149,7 @@ def load_document(uploaded_file):
         raise DocumentError("corrupt") from exc
 
     try:
-        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
+        with LOCK, pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
             if document.needs_pass:
                 raise DocumentError("encrypted")
             page_count = document.page_count
