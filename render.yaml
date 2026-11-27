@@ -16,7 +16,9 @@ services:
       - key: GEMINI_MAX_CONCURRENT
         value: "10"
       - key: MAX_ACTIVE_JOBS
-        value: "2"
+        value: "1"          # 2 at once measured 509 MB on 512 MB; keep 1 on free
+      - key: MAX_QUEUED_JOBS
+        value: "5"
       - key: AI_RUNS_PER_HOUR
         value: "10"
       - key: CHAT_MESSAGES_PER_HOUR

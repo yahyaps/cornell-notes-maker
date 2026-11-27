@@ -14,6 +14,7 @@ import streamlit as st
 
 import ai_assistant
 import jobs
+import mupdf_guard
 import support
 import usage_limits
 from ai_assistant import AIError
@@ -426,6 +427,11 @@ def job_progress():
     job = current_job()
     if job is None or not job.running:
         st.rerun()  # whole page, to show the finished result
+    if job.queued:
+        st.info(T["job_queued"].format(n=job.queue_position() or 1), icon="⏳")
+        if st.button(T["job_cancel"], key="cancel_job", icon="⏹️"):
+            job.cancel()
+        return
     state = job.snapshot()
     done, total = state["done"], state["total"]
     st.progress(done / total if total else 0.0,
@@ -485,7 +491,7 @@ def notes_pdf(template_key, per_sheet):
 def show_preview(pdf_bytes, file_name):
     import pymupdf
 
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as output:
+    with mupdf_guard.LOCK, pymupdf.open(stream=pdf_bytes, filetype="pdf") as output:
         total = output.page_count
     st.html(f'<div class="step">{T["preview"]}</div>')
     page = 1

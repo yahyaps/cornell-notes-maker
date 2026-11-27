@@ -16,6 +16,7 @@ from unittest import mock
 from streamlit.testing.v1 import AppTest
 
 import ai_assistant
+import jobs
 import support
 import usage_limits
 from ai_assistant import AIError
@@ -157,6 +158,28 @@ class AppFlowTest(unittest.TestCase):
         self.assertEqual(job.status, "cancelled")
         self.assertTrue([b for b in app.button if b.key == "continue_analysis"])
         self.assertIn("3", self.texts(app.info))
+
+    def test_second_lecture_waits_in_queue_then_starts(self):
+        release = threading.Event()
+
+        def slow_analysis(pdf, pages, **kwargs):
+            release.wait(10)
+            return [note(n) for n in pages]
+
+        with mock.patch.object(ai_assistant, "analyze_pages", side_effect=slow_analysis), \
+                mock.patch.object(jobs, "MAX_ACTIVE_JOBS", 1):
+            first = self.start("en")
+            first.button(key="create_notes").click().run()
+            second = self.start("en")
+            second.button(key="create_notes").click().run()
+            job = second.session_state["job"]
+            self.assertEqual(job.status, "queued")
+            self.assertIn("position 1", self.texts(second.info))
+            release.set()
+            self.finish_job(first)
+            self.finish_job(second)
+        self.assertEqual(job.status, "done")
+        self.assertIn("4 of 4", self.texts(second.success))
 
     def test_new_upload_stops_previous_job(self):
         release = threading.Event()

@@ -94,22 +94,35 @@ class JobTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: not job.running))
         self.assertEqual((job.status, job.error_kind), ("failed", "invalid_key"))
 
-    def test_server_wide_job_limit(self):
+    def test_one_at_a_time_with_queue(self):
         release = threading.Event()
 
         def slow(contents):
-            release.wait(5)
+            release.wait(10)
             return answer(contents)
 
-        with mock.patch.object(jobs, "MAX_ACTIVE_JOBS", 1):
+        with mock.patch.object(jobs, "MAX_ACTIVE_JOBS", 1), \
+                mock.patch.object(jobs, "MAX_QUEUED_JOBS", 2):
             first = self.run_job(FakeGemini(slow), 2, workers=1)
-            with self.assertRaises(jobs.ServerBusy):
-                self.run_job(FakeGemini(answer), 2)
-            release.set()
-            self.assertTrue(wait_until(lambda: not first.running))
-            # The slot frees up once the first job ends.
             second = self.run_job(FakeGemini(answer), 2)
-            self.assertTrue(wait_until(lambda: not second.running))
+            third = self.run_job(FakeGemini(answer), 2)
+            self.assertEqual((first.status, second.status, third.status),
+                             ("running", "queued", "queued"))
+            self.assertEqual((second.queue_position(), third.queue_position()), (1, 2))
+            with self.assertRaises(jobs.ServerBusy):
+                self.run_job(FakeGemini(answer), 2)        # queue full
+
+            second.cancel()                                # leaves the queue at once
+            self.assertEqual(second.status, "cancelled")
+            self.assertEqual({n["error"] for n in second.notes}, {"cancelled"})
+            self.assertEqual(third.queue_position(), 1)
+
+            release.set()                                  # first ends -> third starts
+            self.assertTrue(wait_until(lambda: not first.running))
+            self.assertTrue(wait_until(lambda: not third.running))
+            self.assertEqual(third.status, "done")
+            self.assertEqual(third.done, 2)
+            self.assertGreater(third.started, first.started)
 
 
 if __name__ == "__main__":

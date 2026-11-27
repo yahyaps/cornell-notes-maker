@@ -82,14 +82,20 @@ CPU, sleeps after ~15 minutes idle, so the first visit can take 30–60 s):
 - **6 slides in flight per lecture** (`GEMINI_SLIDE_WORKERS`). Requests wait on
   the network, not the CPU; each in-flight slide holds one compressed image, and
   images are prepared just before sending, so memory stays flat.
-- **10 Gemini requests server-wide** (`GEMINI_MAX_CONCURRENT`) and **2 lectures
-  analyzed at once** (`MAX_ACTIVE_JOBS`); a third visitor is asked to retry in a
-  minute instead of pushing the instance out of memory.
-- **120 slides per lecture** (`MAX_AI_SLIDES`) and 50 MB per upload: the PDF of
-  the largest lecture builds well inside the memory limit.
+- **One lecture analyzed at a time** (`MAX_ACTIVE_JOBS`); up to 5 more wait in
+  a queue (`MAX_QUEUED_JOBS`), see their position, and start automatically.
+  Measured with two real 70-slide lectures analyzed together: the server
+  peaked at **509 MB**, at the 512 MB limit, so the free plan keeps one.
+- **10 Gemini requests server-wide** (`GEMINI_MAX_CONCURRENT`).
+- **120 slides per lecture** (`MAX_AI_SLIDES`) and 50 MB per upload.
 
-Measured with a real 70-slide lecture: analysis ~2.5 minutes, server peak about
-300 MB. On a paid plan raise the first three values (e.g. 8 / 12 / 4).
+Memory, measured: ~190 MB is the one-time cost of loading the libraries;
+analysis adds ~40 MB; one 70-slide lecture peaked at ~380 MB in total.
+On a paid plan raise the limits (e.g. 8 workers, 12 requests, 2–4 lectures).
+
+All PyMuPDF calls go through one process-wide lock (`mupdf_guard.py`):
+PyMuPDF is not thread-safe, and two PDFs built at the same moment once
+produced a bad text measurement.
 
 Generation runs on a background thread: switching tabs or language does not
 interrupt it, and **Stop analysis** sends no further requests (slides already
@@ -103,7 +109,8 @@ in progress finish and are kept).
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Model name |
 | `GEMINI_SLIDE_WORKERS` | 6 | Slides analyzed at once for one lecture |
 | `GEMINI_MAX_CONCURRENT` | 10 | Gemini requests in flight across all users |
-| `MAX_ACTIVE_JOBS` | 2 | Lectures analyzed at once, all users |
+| `MAX_ACTIVE_JOBS` | 1 | Lectures analyzed at once, all users |
+| `MAX_QUEUED_JOBS` | 5 | Lectures that may wait in the queue |
 | `AI_RUNS_PER_HOUR` | 10 | AI jobs per visitor per hour |
 | `CHAT_MESSAGES_PER_HOUR` | 60 | Chat questions per visitor per hour |
 | `DAILY_SLIDE_BUDGET` | 3000 | Slides analyzed per day, all users |
