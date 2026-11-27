@@ -79,6 +79,12 @@ class AppFlowTest(unittest.TestCase):
             app.get("button_group")[0].set_value("en").run()  # language switch
             self.assertEqual(analyze.call_count, 1, "layout/language must not re-run AI")
 
+    def test_default_layout_is_one_large_slide_per_page(self):
+        with mock.patch.object(ai_assistant, "analyze_pages", return_value=sample_notes()):
+            app = self.start()
+            app.button(key="create_notes").click().run()
+        self.assertEqual([key[2] for key in app.session_state["pdfs"]], [1])
+
     def test_failed_slides_can_be_retried_alone(self):
         with mock.patch.object(ai_assistant, "analyze_pages",
                                return_value=sample_notes(failed={2})) as analyze:

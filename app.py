@@ -58,93 +58,116 @@ def css_text(text):
 
 st.html(f"""
 <style>
-  /* Layout: fluid on phones, comfortable width on tablets and laptops. */
+  /* Type scale (root 18px, steps of ~1.25): 0.9 small, 1 body, 1.35 lead,
+     1.55 section, up to 3.8rem for the hero headline. */
   [data-testid="stMainBlockContainer"] {{
-    max-width: 1120px; padding: 2.4rem 2rem 3rem;
+    max-width: 1180px; padding: 2.2rem 2.2rem 3.5rem;
     direction: {"rtl" if rtl else "ltr"}; text-align: {"right" if rtl else "left"};
   }}
   @media (max-width: 640px) {{
-    [data-testid="stMainBlockContainer"] {{ padding: 1.2rem .9rem 2rem; }}
+    [data-testid="stMainBlockContainer"] {{ padding: 1.1rem 1rem 2.2rem; }}
   }}
   /* Sliders and file names read left-to-right in both languages. */
   [data-testid="stSlider"], [data-testid="stFileUploaderFileName"] {{ direction: ltr; }}
+  /* Keyboard users always see where they are; the accent earns its place here. */
+  button:focus-visible, [role="tab"]:focus-visible, input:focus-visible,
+  textarea:focus-visible {{ outline: 3px solid #FF6200 !important; outline-offset: 2px; }}
 
-  .brand {{ display: flex; align-items: center; gap: .7rem; }}
-  .brand-mark {{ width: 2.1rem; height: auto; flex-shrink: 0; }}
-  .brand-name {{ font-size: 1.15rem; font-weight: 800; color: #2F5A47; }}
-  .tagline {{ color: #5E6063; font-size: 1.1rem; line-height: 1.8; margin: .6rem 0 0;
-    max-width: 38rem; }}
+  .brand {{ display: flex; align-items: center; gap: .75rem; }}
+  .brand-mark {{ width: 2.4rem; height: auto; flex-shrink: 0; }}
+  .brand-name {{ font-size: 1.3rem; font-weight: 800; color: #003366; }}
+  .tagline {{ color: #5F5C66; font-size: 1.2rem; line-height: 1.8; margin: .8rem 0 0;
+    max-width: 36rem; }}
 
   /* Hero: the copy and a real page of the output, side by side. */
-  .hero {{ display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
-    gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center; margin: 1.6rem 0 .6rem; }}
-  .hero h1 {{ font-size: clamp(2rem, 4.6vw, 2.9rem); font-weight: 800; line-height: 1.3;
-    color: #2F5A47; margin: 0 0 1rem; padding: 0; }}
-  .hero-text {{ font-size: clamp(1.08rem, 1.6vw, 1.25rem); line-height: 1.9; color: #404042;
-    max-width: 34rem; margin: 0 0 1.6rem; }}
-  .hero h2 {{ font-size: 1.05rem; font-weight: 800; color: #404042; margin: 0 0 .7rem;
+  .hero {{ display: grid; grid-template-columns: minmax(0, 1.22fr) minmax(0, .78fr);
+    gap: clamp(2rem, 5vw, 4.5rem); align-items: center; margin: 2.4rem 0 1rem; }}
+  /* Balanced wrapping keeps the headline to two even lines, no orphan word. */
+  .hero h1 {{ font-size: clamp(2.2rem, 4.3vw, 3.35rem); font-weight: 800; line-height: 1.3;
+    color: #003366; margin: 0 0 1.3rem; padding: 0; text-wrap: balance; }}
+  .hero-text {{ font-size: clamp(1.15rem, 1.9vw, 1.35rem); line-height: 1.9; color: #2B2D38;
+    max-width: 36rem; margin: 0 0 2.2rem; }}
+  .hero h2 {{ font-size: 1.15rem; font-weight: 800; color: #2B2D38; margin: 0 0 1rem;
     padding: 0; }}
-  .parts {{ list-style: none; margin: 0; padding: 0; display: grid; gap: .65rem; }}
-  .parts li {{ display: grid; grid-template-columns: .9rem 1fr; gap: .7rem;
+  .parts {{ list-style: none; margin: 0; padding: 0; display: grid; gap: .9rem; }}
+  .parts li {{ display: grid; grid-template-columns: 1.15rem 1fr; gap: .85rem;
     align-items: start; }}
-  .parts p {{ margin: 0; font-size: 1.02rem; line-height: 1.75; }}
-  .parts b {{ color: #2F5A47; }}
-  .part-text {{ color: #5E6063; }}
+  .parts p {{ margin: 0; font-size: 1.12rem; line-height: 1.75; text-wrap: pretty; }}
+  .parts b {{ color: #003366; }}
+  .part-text {{ color: #5F5C66; }}
   /* Swatches echo the boxes on the PDF page so the legend maps onto the image. */
-  .swatch {{ width: .9rem; height: .9rem; border-radius: .15rem; margin-top: .45rem; }}
+  .swatch {{ width: 1.15rem; height: 1.15rem; border-radius: .2rem; margin-top: .4rem; }}
   .swatch-explain {{ background: #404042; }}
-  .swatch-points {{ background: #EEF4F1; border-inline-start: 3px solid #4D7D67; }}
+  .swatch-points {{ background: #EEF4F1; border-inline-start: 4px solid #4D7D67; }}
   .swatch-review {{ background: #FFFFFF; border: 1.5px solid #CFDDD5; }}
   .swatch-summary {{ background: #F6F6F4; border: 1.5px solid #CFDDD5; }}
-  .hero-after {{ color: #5E6063; font-size: 1rem; margin: 1.1rem 0 0; }}
-  .hero-sheet {{ margin: 0; justify-self: center; width: min(100%, 25rem); }}
-  .hero-sheet img {{ display: block; width: 100%; height: auto; border-radius: .35rem;
-    border: 1px solid #DCE5E0; box-shadow: 0 1.2rem 2.4rem -1.4rem rgba(47, 90, 71, .45); }}
+  .hero-after {{ color: #5F5C66; font-size: 1.05rem; margin: 1.6rem 0 0; padding-top: 1.2rem;
+    border-top: 1px solid #E5DCD5; max-width: 36rem; }}
+  .hero-sheet {{ margin: 0; justify-self: center; width: min(100%, 27rem); }}
+  .hero-sheet img {{ display: block; width: 100%; height: auto; border-radius: .4rem;
+    border: 1px solid #E5DCD5; background: #FFFFFF;
+    box-shadow: 0 1.6rem 3rem -1.8rem rgba(0, 51, 102, .45); }}
   /* Phones: the template card right below shows the same page, so the hero
      keeps only the words and the upload area moves up. */
   @media (max-width: 760px) {{
-    .hero {{ grid-template-columns: 1fr; }}
+    .hero {{ grid-template-columns: 1fr; margin-top: 1.4rem; }}
     .hero-sheet {{ display: none; }}
+    .hero-text {{ margin-bottom: 1.6rem; }}
   }}
 
-  .step {{ font-weight: 800; font-size: clamp(1.2rem, 2.2vw, 1.45rem); color: #404042;
-    margin: 1.6rem 0 .7rem; }}
-  .muted {{ color: #5E6063; font-size: 1rem; line-height: 1.85; }}
-  .template-name {{ font-weight: 800; font-size: 1.2rem; color: #4D7D67; margin-bottom: .4rem; }}
+  .step {{ font-weight: 800; font-size: clamp(1.45rem, 2.6vw, 1.85rem); color: #003366;
+    margin: 2.8rem 0 1rem; }}
+  .muted {{ color: #5F5C66; font-size: 1.1rem; line-height: 1.85; }}
+  .template-name {{ font-weight: 800; font-size: 1.35rem; color: #004488; margin-bottom: .5rem; }}
+  [data-testid="stCaptionContainer"] p {{ font-size: .95rem; line-height: 1.8; }}
 
-  /* Upload area: larger target, translated instructions. */
   /* The one bold element: the upload area is a Cornell notebook sheet, with
-     ruled lines and the sage margin rule of the cue column. */
-  [data-testid="stFileUploaderDropzone"] {{ position: relative; min-height: 10rem;
-    padding-block: 1.8rem; padding-inline: 5.4rem 1.6rem;
-    border: 1.5px solid #CFDDD5; border-radius: .5rem;
+     blue-grey rules and the orange margin of a ruled pad. */
+  [data-testid="stFileUploaderDropzone"] {{ position: relative; min-height: 12rem;
+    padding-block: 2rem; padding-inline: 5.6rem 1.8rem;
+    border: 1.5px solid #E5DCD5; border-radius: .6rem;
     background-color: #FFFFFF;
     background-image: linear-gradient({"to left" if rtl else "to right"},
-        transparent 4.2rem, #4D7D67 4.2rem, #4D7D67 calc(4.2rem + 2px), transparent calc(4.2rem + 2px)),
-      repeating-linear-gradient(to bottom, transparent 0 1.95rem, #E3ECE7 1.95rem 2rem); }}
-  [data-testid="stFileUploaderDropzone"]:hover {{ border-color: #4D7D67; }}
+        transparent 4.4rem, #FF6200 4.4rem, #FF6200 calc(4.4rem + 2px), transparent calc(4.4rem + 2px)),
+      repeating-linear-gradient(to bottom, transparent 0 2.2rem, #C9D3DE 2.2rem calc(2.2rem + 1px));
+    box-shadow: 0 1rem 2rem -1.6rem rgba(0, 51, 102, .3); }}
+  [data-testid="stFileUploaderDropzone"]:hover {{ border-color: #004488; }}
   [data-testid="stFileUploaderDropzoneInstructions"] > div {{ display: none; }}
   [data-testid="stFileUploaderDropzoneInstructions"]::before {{
-    content: "{css_text(T["upload_drop"])}"; font-size: 1.1rem; font-weight: 700;
-    color: #404042; }}
+    content: "{css_text(T["upload_drop"])}"; font-size: 1.3rem; font-weight: 800;
+    color: #003366; }}
   /* Only the browse button (kind=secondary); the file's delete button keeps its icon. */
-  [data-testid="stFileUploaderDropzone"] button[kind="secondary"] {{ min-height: 2.8rem;
-    padding: 0 1.4rem; border-radius: .7rem; }}
+  [data-testid="stFileUploaderDropzone"] button[kind="secondary"] {{ min-height: 3.2rem;
+    padding: 0 1.6rem; border-radius: .75rem; border-color: #004488; }}
   [data-testid="stFileUploaderDropzone"] button[kind="secondary"] > div {{ display: none; }}
   [data-testid="stFileUploaderDropzone"] button[kind="secondary"]::after {{
-    content: "{css_text(T["upload_button"])}"; font-size: 1rem; font-weight: 700; }}
+    content: "{css_text(T["upload_button"])}"; font-size: 1.1rem; font-weight: 800;
+    color: #004488; }}
+  @media (max-width: 640px) {{
+    [data-testid="stFileUploaderDropzone"] {{ padding-inline: 3.6rem 1rem; min-height: 10rem;
+      background-image: linear-gradient({"to left" if rtl else "to right"},
+          transparent 2.6rem, #FF6200 2.6rem, #FF6200 calc(2.6rem + 2px), transparent calc(2.6rem + 2px)),
+        repeating-linear-gradient(to bottom, transparent 0 2.2rem, #C9D3DE 2.2rem calc(2.2rem + 1px)); }}
+    [data-testid="stFileUploaderDropzoneInstructions"]::before {{ font-size: 1.12rem; }}
+  }}
 
   /* Tabs, buttons and messages sized for touch screens. */
-  [data-testid="stTab"] p {{ font-size: 1.1rem; font-weight: 700; }}
-  [data-testid="stButtonGroup"] button p {{ font-size: 1rem; }}
+  [data-testid="stTab"] p {{ font-size: 1.22rem; font-weight: 800; }}
+  [data-testid="stTab"] {{ padding-block: .6rem; }}
+  [data-testid="stButtonGroup"] button p {{ font-size: 1.05rem; }}
   /* Segmented controls draw their joined borders for left-to-right only. */
   [data-testid="stButtonGroup"] [role="radiogroup"] {{ direction: ltr; }}
   .stButton button, .stDownloadButton button, .stFormSubmitButton button {{
-    min-height: 3rem; font-size: 1.05rem; border-radius: .75rem; }}
-  [data-testid="stImage"] img {{ border: 1px solid #DCE5E0; border-radius: .6rem; }}
+    min-height: 3.4rem; border-radius: .8rem; }}
+  .stButton button p, .stDownloadButton button p, .stFormSubmitButton button p {{
+    font-size: 1.15rem; font-weight: 800; }}
+  [data-testid="stAlertContentInfo"] p, [data-testid="stAlertContentSuccess"] p,
+  [data-testid="stAlertContentWarning"] p, [data-testid="stAlertContentError"] p {{
+    font-size: 1.08rem; }}
+  [data-testid="stImage"] img {{ border: 1px solid #E5DCD5; border-radius: .6rem; }}
 
-  .footer {{ color: #7A7C80; font-size: .95rem; text-align: center; margin-top: 3rem;
-    padding-top: 1.4rem; border-top: 1px solid #E6ECE8; line-height: 2; }}
+  .footer {{ color: #5F5C66; font-size: 1rem; text-align: center; margin-top: 3.5rem;
+    padding-top: 1.6rem; border-top: 1px solid #E5DCD5; line-height: 2; }}
 
   /* AI text: lists follow the interface direction, and each paragraph takes
      the direction of its own first letter (Arabic or English). */
@@ -429,9 +452,9 @@ def notes_tab():
             f'<div class="muted">{template.description_ar if rtl else template.description_en}</div>'
         )
         per_sheet = text_col.segmented_control(
-            T["per_sheet"], options=[2, 1], default=2, key="per_sheet",
+            T["per_sheet"], options=[1, 2], default=1, key="per_sheet",
             format_func=lambda n: T["per_sheet_1"] if n == 1 else T["per_sheet_2"],
-        ) or 2
+        ) or 1
 
     st.html(f'<div class="step">{T["step_create"]}</div>')
     if doc is None:

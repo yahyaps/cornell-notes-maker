@@ -14,13 +14,14 @@ showErrorDetails = "none"
 toolbarMode = "minimal"
 
 [theme]
+# Palette of the Mansous store: cream background, blue primary, orange accent.
 base = "light"
-primaryColor = "#4D7D67"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F2F6F4"
-textColor = "#404042"
-baseFontSize = 17
-borderColor = "#DCE5E0"
+primaryColor = "#004488"
+backgroundColor = "#FFF4EF"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#2B2D38"
+baseFontSize = 18
+borderColor = "#E5DCD5"
 baseRadius = "0.6rem"
 font = "Almarai, sans-serif"
 headingFont = "Almarai, sans-serif"

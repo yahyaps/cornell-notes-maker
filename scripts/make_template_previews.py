@@ -60,12 +60,20 @@ def main():
     out_dir = ROOT / "static" / "previews"
     out_dir.mkdir(parents=True, exist_ok=True)
     for key, template in TEMPLATES.items():
-        pdf = template.build_pdf(source, SAMPLE_NOTES, pages_per_sheet=2,
+        # The app's default layout: one large slide per page.
+        pdf = template.build_pdf(source, SAMPLE_NOTES, pages_per_sheet=1,
                                  lecture_title="Bioethics-I")
         with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+            page = doc[0]
+            # Trim the empty paper below the content so the thumbnail shows only
+            # the page's working area.
+            bottoms = [b[3] for b in page.get_text("blocks")]
+            bottoms += [d["rect"].y1 for d in page.get_drawings()]
+            clip = pymupdf.Rect(0, 0, page.rect.width,
+                                min(page.rect.height, max(bottoms) + 28))
             path = out_dir / f"{key}.png"
-            doc[0].get_pixmap(matrix=pymupdf.Matrix(1.4, 1.4), alpha=False).save(path)
-            print(f"wrote {path}")
+            page.get_pixmap(matrix=pymupdf.Matrix(2, 2), clip=clip, alpha=False).save(path)
+            print(f"wrote {path} ({clip.width:.0f}x{clip.height:.0f} pt)")
 
 
 if __name__ == "__main__":

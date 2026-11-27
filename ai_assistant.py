@@ -105,7 +105,8 @@ def _api_key():
             api_key = st.secrets.get("GEMINI_API_KEY")
         except (FileNotFoundError, KeyError, RuntimeError):
             api_key = None
-    return api_key or None
+    # Keys pasted into a dashboard often carry a stray space or line break.
+    return str(api_key).strip() or None if api_key else None
 
 
 def redact(text, limit=300):
